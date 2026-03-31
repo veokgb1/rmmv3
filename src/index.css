@@ -1,0 +1,44 @@
+/* ============================================
+   全局样式入口
+   Tailwind CSS 三条核心指令，顺序不可变
+   ============================================ */
+
+/* 注入 Tailwind 基础重置样式（normalize + box-sizing 等） */
+@tailwind base;
+
+/* 注入 Tailwind 所有工具类（flex、text-sm、p-4 等） */
+@tailwind components;
+
+/* 注入 Tailwind 工具类变体（hover、focus、responsive 等） */
+@tailwind utilities;
+
+/* ============================================
+   全局自定义基础样式
+   ============================================ */
+@layer base {
+  /* 设置全局字体：优先中文字体，保证渲染质量 */
+  body {
+    @apply font-sans text-gray-800 bg-gray-50 antialiased;
+  }
+
+  /* 统一所有标题字重 */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold;
+  }
+}
+
+/* ============================================
+   全局自定义组件样式（按需在此添加）
+   ============================================ */
+@layer components {
+  /* 主按钮样式：可在多处复用 */
+  .btn-primary {
+    @apply bg-primary-600 hover:bg-primary-700 text-white font-medium
+           px-4 py-2 rounded-lg transition-colors duration-150 cursor-pointer;
+  }
+
+  /* 卡片容器样式 */
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-gray-100 p-4;
+  }
+}
