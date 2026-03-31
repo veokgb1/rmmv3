@@ -6,84 +6,110 @@
 
 | 阶段 | 名称 | 核心产出 | 状态 |
 |------|------|----------|------|
-| **S0** | 环境初始化 | AI 治理矩阵、Git 仓库 | ✅ 已完成 |
-| **S1** | 基础架构 | Vite 工程、六层目录、四页面骨架 | ✅ 已完成 100% |
-| **S2** | UI 增强 | Mock数据层、Clock、天气骨架 | 🔨 进行中 |
-| **S3** | 数据模型 | Firestore 结构、TypeScript 类型完善 | ⏳ 待开始 |
-| **S4** | 解析引擎 | 微信/支付宝 CSV 解析，错误收集 | ⏳ 待开始 |
+| **S0** | 环境初始化 | AI 治理矩阵、Git 仓库 | ✅ 封板 |
+| **S1** | 基础架构 | Vite 工程、六层目录、四页面骨架 | ✅ 封板 |
+| **S2** | UI 增强 | Mock数据、Clock、天气、首页精美化 | ✅ 封板 |
+| **S3** | 数据模型 | Firestore Schema、类型定义（含ledgerId） | 🔨 进行中 |
+| **S4** | 解析引擎 | 微信/支付宝 CSV 解析 | ⏳ 待开始 |
 | **S5** | 手动记账 | 表单录入、编辑、删除 | ⏳ 待开始 |
-| **S6** | 统计图表 | 月度统计、分类饼图、趋势折线图 | ⏳ 待开始 |
-| **S7** | 分类管理 | 自定义分类、关键词规则 | ⏳ 待开始 |
-| **S8** | 数据导出 | 导出 CSV/Excel | ⏳ 待开始 |
+| **S6** | 统计图表 | 月度统计、分类饼图、趋势图 | ⏳ 待开始 |
+| **S7** | 权限与租户 | **多账套切换 UI、ledger 权限体系** | ⏳ 待开始 |
+| **S8** | 数据导出 | 按账套导出 CSV/Excel | ⏳ 待开始 |
 | **S9** | 优化上线 | 性能优化、Firebase Hosting 部署 | ⏳ 待开始 |
-| **SX** | 收尾增强 | **全局换皮肤 / 多主题 / 深色模式** | ⏳ 最终收尾时统一处理 |
+| **SX** | 收尾增强 | 全局换皮肤 / 深色模式 / 多色系 | ⏳ 最终收尾 |
 
 ---
 
-## ✅ S0 — 环境初始化（已归档）
-所有治理矩阵文件、`.gitignore`、Git 仓库初始化完成。
+## ✅ S0/S1/S2 已封板归档（略）
 
 ---
 
-## ✅ S1 — 基础架构搭建（100% 完成，已归档）
+## 🔨 S3 — 数据模型设计（当前阶段）
 
-- [x] `package.json` 依赖声明
-- [x] `vite.config.ts` 路径别名 `@/`
-- [x] `tsconfig*.json` TypeScript 严格模式
-- [x] `tailwind.config.js` 主色调 + 中文字体 + darkMode class 预设
-- [x] `postcss.config.js`
-- [x] `index.html` 中文 lang/meta
-- [x] `src/index.css` Tailwind + CSS 变量系统 + 全局组件样式库
-- [x] `src/main.tsx` 入口挂载
-- [x] `src/App.tsx` 路由 + 布局
-- [x] `src/pages/` 四页面骨架
-- [x] `src/components/layout/BottomNav.tsx`
-- [x] `src/types/` Transaction + ParseResult
-- [x] `src/utils/` dateUtils + numberUtils
-- [x] GitHub 推送 `https://github.com/veokgb1/RMMV3`
+> ⚠️ S3 铁律：先设计后编码。本阶段核心产出是文档和类型，不写 Firebase 连接代码。
 
----
+### 3.1 设计文档
+- [x] `docs/03_FIRESTORE_SCHEMA.md`：完整 Firestore 集合/字段设计
 
-## 🔨 S2 — UI 增强（进行中）
+### 3.2 TypeScript 类型
+- [x] `src/types/Transaction.types.ts`：加入 `ledgerId`
+- [x] `src/types/Ledger.types.ts`：账套类型定义
+- [x] `src/types/Category.types.ts`：分类类型
+- [x] `src/types/User.types.ts`：用户档案类型
 
-> ⚠️ **S2 铁律：严禁接入 Firebase 或任何真实 API，全部使用 Mock 数据驱动**
-> 🔒 **主题换皮肤 / 深色模式切换：已冻结，挪至 SX 收尾阶段统一处理，S2 期间绝不开发**
-
-### 2.1 Mock 数据层
-- [x] `src/mock/transactions.mock.ts`：20条逼真账单数据 + 本月统计辅助函数
-- [ ] `src/mock/weather.mock.ts`：模拟天气数据（WeatherWidget 使用）
-
-### 2.2 主题系统 ← 🔒 冻结，移至 SX
-- ~~`src/store/themeStore.ts`~~（SX 阶段实现）
-- ~~深色模式切换 UI~~（SX 阶段实现）
-
-### 2.3 Clock 模块 ← ⏳ 当前任务
-- [ ] `src/widgets/ClockWidget.tsx`：实时时钟（年月日 + 星期 + 时间）
-- [ ] 嵌入 `HomePage.tsx` 顶部区域
-
-### 2.4 天气组件骨架 ← ⏳ 下一任务
-- [ ] `src/mock/weather.mock.ts`：静态天气数据
-- [ ] `src/widgets/WeatherWidget.tsx`：天气展示骨架，预留真实 API 接口
-- [ ] 嵌入 `HomePage.tsx` 顶部区域
-
-### 2.5 S2 完成后待归档项
-- [x] 首页精美化（Mock 数据驱动）
-- [x] 设计系统色板升级（tailwind.config.js）
-- [x] CSS 变量系统 + 组件样式库（index.css）
+### 3.3 Service 层（需 Firebase Config，暂缓）
+- [ ] `src/services/firebase/firebaseApp.ts`（需 firebaseConfig）
+- [ ] `src/services/firebase/billService.ts`（Firestore CRUD）
+- [ ] `src/services/firebase/ledgerService.ts`（账套 CRUD）
+- [ ] Firestore 安全规则（`firestore.rules`）
 
 ---
 
-## SX — 收尾增强（最终阶段，统一处理）
+## ⏳ S4 — 账单解析引擎
 
-> 📌 **备忘**：等待 S3-S9 核心功能全部完成后，再统一处理以下体验增强：
-
-- [ ] 全局换皮肤功能（`src/store/themeStore.ts`）
-- [ ] 深色模式切换（暗色变量覆盖，`html.dark` 切换）
-- [ ] 多色系主题支持（可选：绿/蓝/紫色系）
-- [ ] 字体大小切换（紧凑/标准/宽松三档）
-- [ ] 图片缩放弹窗 Lightbox
+- [ ] `src/services/parsers/wechatParser.ts`
+- [ ] `src/services/parsers/alipayParser.ts`
+- [ ] `src/services/parsers/parseUtils.ts`
+- [ ] `src/hooks/useFileImport.ts`
+- [ ] 导入页面 UI（`ImportPage.tsx`）
 
 ---
 
-## S3-S9
-详细任务在对应阶段开始前展开。
+## ⏳ S5 — 手动记账
+
+- [ ] 记账表单组件（金额/分类/日期/备注）
+- [ ] `src/hooks/useBills.ts`
+- [ ] `src/store/billStore.ts`
+
+---
+
+## ⏳ S6 — 统计图表
+
+- [ ] 安装 Recharts：`npm install recharts`
+- [ ] 月度收支趋势折线图
+- [ ] 支出分类占比饼图
+- [ ] 接入 WeatherWidget 真实 API（和风天气 / OpenWeatherMap）
+
+---
+
+## ⏳ S7 — 权限与多账套（Multi-Ledger）
+
+> 📌 **战略备忘**：系统走向"通用型 SaaS"模式，以 `ledgerId` 实现数据逻辑隔离。
+
+### 已知账套
+| ledgerId | 名称 | 说明 |
+|----------|------|------|
+| `personal` | 个人账本 | 默认账套，S3 起即预留字段 |
+| `ledger-elderly` | 老年人账本 | 特定用户群 |
+| `mingpao-ca` | Ming Pao Canada | 企业账套 |
+| `mingpao-to` | Ming Pao Toronto | 企业账套 |
+
+### S7 任务
+- [ ] `src/types/Ledger.types.ts` 扩展（权限角色：owner/editor/viewer）
+- [ ] `src/services/firebase/ledgerService.ts`（账套 CRUD + 成员管理）
+- [ ] `src/store/ledgerStore.ts`（当前活跃账套状态）
+- [ ] 账套切换 UI（下拉选择器，嵌入顶部导航）
+- [ ] Firestore 安全规则：基于 `ledgerId` + 角色的读写权限
+
+---
+
+## ⏳ S8 — 数据导出
+
+- [ ] 按当前活跃账套筛选导出
+- [ ] 支持 CSV / Excel 格式
+
+---
+
+## ⏳ S9 — 优化上线
+
+- [ ] 性能优化（懒加载、分页）
+- [ ] Firebase Hosting 部署
+- [ ] PWA 配置（可选）
+
+---
+
+## SX — 收尾增强
+
+- [ ] 全局换皮肤（深色模式、多色系主题）
+- [ ] 字体大小切换
+- [ ] Lightbox 图片弹窗
