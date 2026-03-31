@@ -3,38 +3,34 @@
 
 ---
 
-## ▶ 当前状态：【等待启动 S2：UI 增强与 Mock 数据驱动】
+## ▶ 当前阶段：S2 — UI 增强（进行中）
 
-> 下次对话直接说 **"启动 S2"** 即可继续。
+### 🔔 重要备忘（AI 必读）
+> **全局换皮肤 / 深色模式 / 主题切换功能：已明确冻结。**
+> 等待最终收尾（SX 阶段）时再实现，S2 及后续 S3-S9 期间绝对不得碰触任何主题相关代码。
 
-### S2 启动前须知（AI 必读）
-- ⚠️ **严禁**接入 Firebase 或任何真实 API
-- ✅ 全部使用 `src/mock/` 下的静态 Mock 数据驱动 UI
-- ✅ 目标是完善页面"长相"：主题、字体、弹窗、时钟、天气骨架
-- ✅ 所有 Hook 接口必须按"可无缝切换真实数据"的方式设计（参考 PLAN.md S2 说明）
+### 当前子任务
+- 🔨 **正在开发**：`ClockWidget.tsx`（实时时钟）+ `WeatherWidget.tsx`（天气骨架）
+- ⏳ **待集成**：将两个 Widget 嵌入 `HomePage.tsx` 顶部区域
+
+### S2 完成清单
+- [x] `src/mock/transactions.mock.ts`：20条 Mock 账单 + 本月统计
+- [x] 首页精美化（Mock 数据驱动，收支横幅 + 账单列表）
+- [x] 设计系统色板升级（tailwind.config.js）
+- [x] CSS 变量系统 + 全局组件样式库（index.css）
+- [ ] `src/mock/weather.mock.ts`
+- [ ] `src/widgets/ClockWidget.tsx`
+- [ ] `src/widgets/WeatherWidget.tsx`
+- [ ] 首页集成两个 Widget
 
 ---
 
 ## ✅ S1 — 基础架构搭建（100% 完成）
-
-**完成日期**：2026-03-31
-**Git Commit**：`c40c475`
-**GitHub**：已推送至 `https://github.com/veokgb1/RMMV3`（main 分支）✅
-
-### 交付物清单（全部勾选）
-- [x] Vite 6 + React 18 + TypeScript 5 + Tailwind CSS 3 工程
-- [x] 六层目录结构（pages / components / hooks / services / store / utils）
-- [x] 四页面骨架：Home、Query、Report、Settings
-- [x] 底部导航栏 BottomNav（NavLink 激活高亮）
-- [x] 核心类型定义：Transaction、ParseResult
-- [x] 工具函数：dateUtils、numberUtils
-- [x] TypeScript 零错误，Vite build 成功（1.09s）
-- [x] GitHub 同步完成
+**Git**：`c40c475` → **GitHub**：`veokgb1/RMMV3` main 分支 ✅
 
 ---
 
 ## ✅ S0 — 环境初始化（已归档）
-**完成日期**：2026-03-31 — AI 治理矩阵 + Git 仓库初始化
 
 ---
 
@@ -42,7 +38,9 @@
 
 | 会话 | 日期 | 主要工作 | 关键决策 |
 |------|------|----------|----------|
-| #1 | 2026-03-31 | 治理矩阵初始化，Git 仓库建立 | 锁定技术栈，建立 AI 行为规范 |
-| #2 | 2026-03-31 | 物理重建治理矩阵，内容完善 | 确认目录锁定，隔离 V2 |
-| #3 | 2026-03-31 | S1 前端骨架全量实现 | 手动搭建 Vite，禁止接入 API |
-| #4 | 2026-03-31 | GitHub 推送，规划 S2，记忆封存 | S2 全程 Mock 数据驱动 |
+| #1 | 2026-03-31 | 治理矩阵初始化 | 锁定技术栈 |
+| #2 | 2026-03-31 | 物理重建治理矩阵 | 隔离 V2 |
+| #3 | 2026-03-31 | S1 前端骨架 | 禁止接入 API |
+| #4 | 2026-03-31 | GitHub 推送，S2 规划 | S2 全程 Mock |
+| #5 | 2026-03-31 | S2 首波：Mock数据+首页+样式 | 换皮肤冻结至 SX |
+| #6 | 2026-03-31 | S2 第二波：Clock + Weather Widget | 主题不开发，仅登记 |

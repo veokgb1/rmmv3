@@ -1,4 +1,4 @@
-// 首页：本月收支概览 + 最近账单列表
+// 首页：时钟/天气横幅 + 本月收支概览 + 最近账单列表
 // S2 阶段：使用 Mock 数据驱动，UI 完全可用，S3 替换数据源时此文件无需改动
 
 import { useMemo } from 'react'
@@ -11,8 +11,12 @@ import {
 } from '@/mock/transactions.mock'
 
 // 引入工具函数
-import { formatAmount }    from '@/utils/numberUtils'
-import { toChineseDate }   from '@/utils/dateUtils'
+import { formatAmount }  from '@/utils/numberUtils'
+import { toChineseDate } from '@/utils/dateUtils'
+
+// 引入两个 Widget 组件
+import ClockWidget   from '@/widgets/ClockWidget'
+import WeatherWidget from '@/widgets/WeatherWidget'
 
 // 引入类型
 import type { Transaction } from '@/types/Transaction.types'
@@ -148,41 +152,49 @@ function HomePage() {
   // 取最近 8 条账单显示在首页列表（避免列表过长）
   const recentBills = useMemo(() => MOCK_THIS_MONTH.slice(0, 8), [])
 
-  // 获取当前月份的中文显示字符串，如 "2026年3月"
-  const now = new Date()
-  const monthLabel = `${now.getFullYear()}年${now.getMonth() + 1}月`
-
   return (
     // 页面容器：使用全局 .page-container 保证底部安全距离
     <div className="page-container">
 
       {/* ══ 顶部标题栏 ════════════════════════════════════════ */}
-      <div className="flex items-center justify-between mb-5 pt-1">
-        {/* 左侧：应用名 */}
+      <div className="flex items-center justify-between mb-4 pt-1">
+        {/* 左侧：应用名 + 副标题 */}
         <div>
           <h1 className="text-xl font-bold text-content-primary">资金总览</h1>
-          {/* 副标题：当前月份 */}
-          <p className="text-xs text-content-tertiary mt-0.5">{monthLabel}</p>
+          <p className="text-xs text-content-tertiary mt-0.5">个人资金管理系统</p>
         </div>
-        {/* 右侧：头像占位（S2 后期接入用户系统） */}
+        {/* 右侧：头像占位（S2 接入用户系统后替换） */}
         <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-sm">
           👤
         </div>
       </div>
 
-      {/* ══ 收支概览横幅卡片 ══════════════════════════════════ */}
-      {/* 深色渐变背景，强视觉聚焦 */}
+      {/* ══ 主横幅卡片：时钟 + 天气 + 收支概览 ════════════════ */}
+      {/* 一张深色渐变大卡，从上到下分三个区域 */}
       <div className="rounded-2xl p-5 mb-4 bg-gradient-to-br from-primary-700 to-primary-500 text-white shadow-fab">
 
-        {/* 净收支主数字 */}
-        <p className="text-xs text-white/70 mb-1">本月净收支</p>
+        {/* ── 区域①：时钟 + 天气（水平分栏） ──────────────── */}
+        <div className="flex flex-col gap-3 mb-5">
+          {/* 时钟组件：左年月日/右时分秒 */}
+          <ClockWidget />
+          {/* 水平细分割线，透明白色，将时钟和天气视觉分隔 */}
+          <div className="h-px bg-white/10" />
+          {/* 天气组件：左城市+状况，右温度（S2使用Mock数据） */}
+          <WeatherWidget />
+        </div>
+
+        {/* ── 区域②：净收支主数字 ───────────────────────────── */}
+        {/* 分割线：将 Widget 区与财务区隔开 */}
+        <div className="h-px bg-white/15 mb-4" />
+
+        <p className="text-xs text-white/60 mb-1">本月净收支</p>
         <p className="text-3xl font-bold tracking-tight mb-4">
-          {/* 净收支前缀：正数加+，负数加- */}
+          {/* 前缀符号：正数显示+，负数显示− */}
           <span className="text-xl mr-1">{netAmount >= 0 ? '+' : '−'}¥</span>
           {formatAmount(Math.abs(netAmount))}
         </p>
 
-        {/* 收入 / 支出 两列对比 */}
+        {/* ── 区域③：收入 / 支出 两列对比 ─────────────────── */}
         <div className="flex gap-4">
           {/* 收入列 */}
           <div className="flex-1">
@@ -191,7 +203,7 @@ function HomePage() {
               ¥{formatAmount(MOCK_INCOME)}
             </p>
           </div>
-          {/* 垂直分割线 */}
+          {/* 垂直细分割线 */}
           <div className="w-px bg-white/20" />
           {/* 支出列 */}
           <div className="flex-1">
