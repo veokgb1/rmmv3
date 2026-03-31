@@ -1,44 +1,223 @@
-/* ============================================
-   全局样式入口
-   Tailwind CSS 三条核心指令，顺序不可变
-   ============================================ */
+/* ============================================================
+   全局样式入口 — S2 版本
+   Tailwind 指令 + CSS 变量系统 + 组件样式库
+   ============================================================ */
 
-/* 注入 Tailwind 基础重置样式（normalize + box-sizing 等） */
+/* Tailwind 基础重置样式（normalize + box-sizing） */
 @tailwind base;
-
-/* 注入 Tailwind 所有工具类（flex、text-sm、p-4 等） */
+/* Tailwind 所有工具类 */
 @tailwind components;
-
-/* 注入 Tailwind 工具类变体（hover、focus、responsive 等） */
+/* Tailwind 工具类变体（hover / focus / responsive） */
 @tailwind utilities;
 
-/* ============================================
-   全局自定义基础样式
-   ============================================ */
+
+/* ============================================================
+   CSS 变量系统：浅色模式默认值
+   组件使用 var(--xxx) 引用，暗色模式只需覆盖变量值
+   ============================================================ */
 @layer base {
-  /* 设置全局字体：优先中文字体，保证渲染质量 */
-  body {
-    @apply font-sans text-gray-800 bg-gray-50 antialiased;
+  :root {
+    /* 页面背景色 */
+    --color-bg-page:    #f8fafc;
+    /* 卡片背景色 */
+    --color-bg-card:    #ffffff;
+    /* 输入框/标签背景 */
+    --color-bg-overlay: #f1f5f9;
+
+    /* 文字层级 */
+    --color-text-primary:   #0f172a;
+    --color-text-secondary: #475569;
+    --color-text-tertiary:  #94a3b8;
+
+    /* 边框色 */
+    --color-border:       #e2e8f0;
+    --color-border-light: #f1f5f9;
+
+    /* 主品牌色 */
+    --color-primary:      #0d9488;
+    --color-primary-bg:   #f0fdf9;
+
+    /* 收入 / 支出语义色 */
+    --color-income:    #16a34a;
+    --color-income-bg: #f0fdf4;
+    --color-expense:   #dc2626;
+    --color-expense-bg:#fff1f2;
   }
 
-  /* 统一所有标题字重 */
-  h1, h2, h3, h4, h5, h6 {
-    @apply font-semibold;
+  /* 暗色模式：覆盖 CSS 变量（html.dark 触发） */
+  html.dark {
+    --color-bg-page:    #0f172a;
+    --color-bg-card:    #1e293b;
+    --color-bg-overlay: #334155;
+
+    --color-text-primary:   #f1f5f9;
+    --color-text-secondary: #94a3b8;
+    --color-text-tertiary:  #64748b;
+
+    --color-border:       #334155;
+    --color-border-light: #1e293b;
+
+    --color-primary:      #14b8a6;
+    --color-primary-bg:   #134e4a;
+
+    --color-income:    #4ade80;
+    --color-income-bg: #052e16;
+    --color-expense:   #f87171;
+    --color-expense-bg:#450a0a;
+  }
+
+  /* 全局基础样式 */
+  html {
+    /* 禁用 iOS 双击缩放，保持移动端一致性 */
+    touch-action: manipulation;
+    /* 优化字体渲染 */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    /* 使用 CSS 变量，自动响应暗色切换 */
+    background-color: var(--color-bg-page);
+    color: var(--color-text-primary);
+    /* 字体栈：中文优先 */
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC",
+                 "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* 统一滚动条样式（仅 Webkit 浏览器） */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 9999px;
   }
 }
 
-/* ============================================
-   全局自定义组件样式（按需在此添加）
-   ============================================ */
+
+/* ============================================================
+   组件样式库：可复用的 UI 基元
+   ============================================================ */
 @layer components {
-  /* 主按钮样式：可在多处复用 */
-  .btn-primary {
-    @apply bg-primary-600 hover:bg-primary-700 text-white font-medium
-           px-4 py-2 rounded-lg transition-colors duration-150 cursor-pointer;
+
+  /* ── 卡片 ─────────────────────────────────────────────── */
+  .card {
+    background-color: var(--color-bg-card);
+    border-radius: 0.75rem;          /* 12px 圆角 */
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
+    border: 1px solid var(--color-border-light);
+    padding: 1rem;                   /* 内边距 16px */
+    transition: box-shadow 150ms ease;
+  }
+  /* 卡片 hover 状态：轻微升起效果 */
+  .card-hover:hover {
+    box-shadow: 0 4px 12px 0 rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.05);
   }
 
-  /* 卡片容器样式 */
-  .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-100 p-4;
+  /* ── 主按钮 ───────────────────────────────────────────── */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background-color: var(--color-primary);
+    color: #ffffff;
+    font-size: 0.875rem;             /* 14px */
+    font-weight: 500;
+    padding: 0.625rem 1.25rem;       /* 10px 20px */
+    border-radius: 0.625rem;         /* 10px */
+    border: none;
+    cursor: pointer;
+    transition: opacity 150ms ease, transform 100ms ease;
+    -webkit-tap-highlight-color: transparent; /* 移除移动端点击高亮 */
+  }
+  .btn-primary:hover   { opacity: 0.92; }
+  .btn-primary:active  { transform: scale(0.97); } /* 按下微缩动效 */
+  .btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* ── 幽灵按钮（描边样式） ─────────────────────────────── */
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background-color: transparent;
+    color: var(--color-primary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.625rem;
+    border: 1.5px solid var(--color-primary);
+    cursor: pointer;
+    transition: background-color 150ms ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-ghost:hover  { background-color: var(--color-primary-bg); }
+  .btn-ghost:active { transform: scale(0.97); }
+
+  /* ── 收支金额徽章 ─────────────────────────────────────── */
+  /* 收入徽章：绿底绿字 */
+  .badge-income {
+    color: var(--color-income);
+    background-color: var(--color-income-bg);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+  }
+  /* 支出徽章：红底红字 */
+  .badge-expense {
+    color: var(--color-expense);
+    background-color: var(--color-expense-bg);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+  }
+
+  /* ── 分割线 ───────────────────────────────────────────── */
+  .divider {
+    height: 1px;
+    background-color: var(--color-border-light);
+    margin: 0;
+  }
+
+  /* ── 页面容器（统一页面内边距 + 底部安全区） ─────────── */
+  .page-container {
+    padding: 1rem;                   /* 16px 四边内边距 */
+    padding-bottom: 5rem;            /* 80px：底部留出导航栏高度 */
+    min-height: 100dvh;              /* dvh：正确处理移动端地址栏 */
+  }
+}
+
+
+/* ============================================================
+   工具类扩展
+   ============================================================ */
+@layer utilities {
+  /* 文字渐变色（用于大金额展示） */
+  .text-gradient-green {
+    background: linear-gradient(135deg, #059669, #14b8a6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* 禁止文字选中（按钮、导航等交互元素） */
+  .no-select {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* iOS 安全区底部填充（刘海屏/动态岛） */
+  .pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
   }
 }
