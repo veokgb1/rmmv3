@@ -1,7 +1,8 @@
 // 首页：时钟/天气横幅 + 本月收支概览 + 最近账单列表
-// S2 阶段：使用 Mock 数据驱动，UI 完全可用，S3 替换数据源时此文件无需改动
+// S4 阶段：导入按钮接入 ImportModal，解析引擎可用
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import ImportModal from '@/components/import/ImportModal'
 
 // 引入 Mock 数据（S3 后替换为真实 Hook：useBills）
 import {
@@ -149,8 +150,11 @@ function HomePage() {
   // 计算净收支（收入 - 支出）
   const netAmount = useMemo(() => MOCK_INCOME - MOCK_EXPENSE, [])
 
-  // 取最近 8 条账单显示在首页列表（避免列表过长）
+  // 取最近 8 条账单显示在首页列表
   const recentBills = useMemo(() => MOCK_THIS_MONTH.slice(0, 8), [])
+
+  // 控制导入弹窗的开关状态
+  const [importOpen, setImportOpen] = useState(false)
 
   return (
     // 页面容器：使用全局 .page-container 保证底部安全距离
@@ -218,8 +222,11 @@ function HomePage() {
       {/* ══ 快捷操作入口 ═════════════════════════════════════ */}
       <div className="grid grid-cols-2 gap-3 mb-4">
 
-        {/* 导入账单 */}
-        <button className="card card-hover flex flex-col items-center py-4 gap-2 no-select">
+        {/* 导入账单：点击打开解析弹窗（S4 解析引擎已接入） */}
+        <button
+          onClick={() => setImportOpen(true)}
+          className="card card-hover flex flex-col items-center py-4 gap-2 no-select"
+        >
           <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center text-xl">
             📥
           </div>
@@ -288,6 +295,12 @@ function HomePage() {
           </button>
         )}
       </div>
+
+      {/* 导入账单弹窗：挂载在页面最外层，保证遮罩层级正确 */}
+      <ImportModal
+        isOpen={importOpen}
+        onClose={() => setImportOpen(false)}
+      />
 
     </div>
   )
