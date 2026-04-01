@@ -9,6 +9,9 @@ import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
 import MonthlyBarChart       from '@/components/statistics/MonthlyBarChart'
 import CategoryPieChart      from '@/components/statistics/CategoryPieChart'
+import StatCards             from '@/components/statistics/StatCards'
+import BudgetProgressBar     from '@/components/statistics/BudgetProgressBar'
+import ExpenseRankingList    from '@/components/statistics/ExpenseRankingList'
 
 // 业务 Hook（订阅 Zustand Store，替代所有 Mock 常量）
 import { useBills }  from '@/hooks/useBills'
@@ -375,50 +378,87 @@ function HomePage() {
         </button>
       </div>
 
-      {/* ══ 统计看板视图 ══════════════════════════════════════ */}
+      {/* ══ 统计看板视图（全景豪华版）════════════════════════ */}
       {activeSection === 'stats' && (
         <div className="space-y-4">
-          {/* 月度收支趋势图 */}
+
+          {/* ① 核心数据卡片 — 三件套 KPI */}
+          {/* 数据流：useBills → income/expense/net，账套切换时自动重传 */}
+          <StatCards
+            income={income}
+            expense={expense}
+            net={net}
+            currency={activeLedger?.currency}
+          />
+
+          {/* ② 月度预算监控 */}
+          {/* Mock 预算额度 by ledgerType，S9 阶段替换为 Firestore budgets 集合 */}
+          <div className="card">
+            <BudgetProgressBar
+              expense={expense}
+              ledgerType={activeLedger?.type ?? 'personal'}
+              currency={activeLedger?.currency}
+            />
+          </div>
+
+          {/* ③ 月度收支趋势图 */}
           <div className="card">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-content-primary">月度收支趋势</h2>
-              <span className="text-[11px] text-content-tertiary">最近 6 个月</span>
+              <span className="text-[11px] text-content-tertiary px-2 py-0.5
+                               bg-surface-overlay rounded-full">最近 6 个月</span>
             </div>
-            {/* 数据源：allLedgerBills 已按 activeLedgerId 隔离，切换账套即重绘 */}
+            {/* allLedgerBills：跨月全量 + 已按 activeLedgerId 隔离 */}
             <MonthlyBarChart bills={allLedgerBills} />
           </div>
 
-          {/* 消费分类占比图 */}
+          {/* ④ 分类支出排行榜 */}
+          <div className="card">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-content-primary">支出碎钞机 Top 5</h2>
+              <span className="text-[11px] text-content-tertiary">本月 · 相对排名</span>
+            </div>
+            {/* thisMonthBills：本月 + 已按 activeLedgerId 隔离 */}
+            <ExpenseRankingList
+              bills={thisMonthBills}
+              topN={5}
+              currency={activeLedger?.currency}
+            />
+          </div>
+
+          {/* ⑤ 消费分类环形图 */}
           <div className="card">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="text-sm font-semibold text-content-primary">本月支出分类</h2>
-              <span className="text-[11px] text-content-tertiary">
+              <h2 className="text-sm font-semibold text-content-primary">支出分类占比</h2>
+              <span className="text-[11px] text-primary-500 font-medium">
                 {activeLedger?.name ?? '—'}
               </span>
             </div>
             <p className="text-xs text-content-tertiary mb-3">
-              共 ¥{Math.round(expense).toLocaleString()} · 排除转账
+              本月支出合计 · 排除转账类别
             </p>
-            {/* 数据源：thisMonthBills 已按 activeLedgerId + 本月 双过滤 */}
             <CategoryPieChart bills={thisMonthBills} />
           </div>
 
-          {/* 预支出面板占位 */}
-          <div className="card opacity-60">
+          {/* ⑥ 预支出管理 — 占位（S9 点亮） */}
+          <div className="card border border-dashed border-gray-200 opacity-60">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-base flex-shrink-0">
                 📅
               </div>
               <div className="flex-1">
                 <p className="text-xs font-semibold text-content-primary">预支出管理</p>
-                <p className="text-[11px] text-content-tertiary mt-0.5">待发生账单、报销追踪</p>
+                <p className="text-[11px] text-content-tertiary mt-0.5">
+                  待发生账单 · 垫资报销追踪 · 自定义预算设置
+                </p>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5
-                               bg-amber-100 text-amber-600 rounded-full">
+                               bg-amber-100 text-amber-600 rounded-full flex-shrink-0">
                 🚧 S9
               </span>
             </div>
           </div>
+
         </div>
       )}
 

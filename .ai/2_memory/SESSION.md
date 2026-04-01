@@ -111,9 +111,24 @@
   - 失败展开条：错误信息 + 常见原因提示
 - [x] TypeScript 零错误 + Vite build 2.94s（含 Firebase SDK）
 
-## ✅ S6 — 数据可视化看板（封板）
+## ✅ S6 — 数据可视化看板（全景封板）
 
-### S6 完成清单（V3-指令-04，2026-04-01）
+### S6 第二波完成清单（V3-指令-06，2026-04-01）
+- [x] `src/components/statistics/StatCards.tsx`：三件套 KPI 卡片（收入/支出/净结余，多货币符号适配）
+- [x] `src/components/statistics/BudgetProgressBar.tsx`：月度预算进度条
+  - Mock 预算：personal ¥8000 / family ¥5000 / enterprise ¥3000
+  - 四色预警：< 60% 绿 → 60-80% 琥珀 → 80-95% 橙 → ≥95% 红色脉冲
+  - 80% 警戒线刻度可见，超支显示"超支 ¥XX"
+  - 架构备注：预算字段未进入 Firestore Schema，S9 阶段接入 budgets 集合
+- [x] `src/components/statistics/ExpenseRankingList.tsx`：支出碎钞机 Top 5
+  - 水平进度条（相对于第一名 100%），颜色与 CategoryPieChart 语义一致
+  - 前三名奖牌徽章（🥇🥈🥉），类别来源严格限定 SystemCategory 字段
+- [x] `src/pages/HomePage.tsx`：统计看板重排为六段结构
+  - ① StatCards → ② BudgetProgressBar → ③ MonthlyBarChart → ④ ExpenseRankingList → ⑤ CategoryPieChart → ⑥ 预支出占位
+  - 所有组件 props 来自 useBills()/useLedger()，切换账套 → 全部组件瞬时重绘
+- [x] TypeScript 零错误 + Vite build 3.12s
+
+### S6 第一波完成清单（V3-指令-04，2026-04-01）
 - [x] `npm install recharts`：轻量图表库引入
 - [x] `npm install -D @types/node`：修复 vite.config.ts 类型问题（顺带封板历史 Bug）
 - [x] `src/hooks/useBills.ts`：新增 `allLedgerBills`（全量账套账单，供图表使用）
