@@ -40,7 +40,25 @@
 
 ---
 
+## ▶ 当前进行：S7 核心 UI 骨架（Mock 驱动，第一波交付）
+
+### S7 第一波完成清单
+- [x] `src/mock/ledgers.mock.ts`：三个预设账套 Mock 数据（personal / mingpao-ca / ledger-elderly）
+- [x] `src/components/ledger/LedgerSwitcher.tsx`：账套切换器（下拉菜单 + Toast + 点外关闭）
+- [x] `src/components/ledger/CorrectionPolicyModal.tsx`：纠偏策略弹窗（三选一：仅限本次/创建规则/溯及既往）
+- [x] `src/pages/HomePage.tsx`：集成 LedgerSwitcher（顶部导航）+ CorrectionPolicyModal（演示入口条 + 账单行 hover 触发）
+- [x] TypeScript 零错误，Vite build 1.09s，51 模块通过
+
+### S7 待完成（后续波次）
+- [ ] `src/5_store/ledgerStore.ts`：Zustand 账套全局状态（S5 接入后替换 React State）
+- [ ] `src/services/correctionService.ts`：纠偏策略执行逻辑（once / rule_forward / retroactive）
+- [ ] Firestore Security Rules：多账套 RBAC 权限规则
+- [ ] `LedgerSettingsPage.tsx`：账套管理页面（目前"管理账套"按钮已预留入口）
+
+---
+
 ## ✅ 历史封板阶段
+- S4（战略升级）：三大支柱字段注入 + 治理文档全局对齐（2026-04-01）
 - S3：Firestore Schema + 类型体系（ledgerId 预留）
 - S2：UI 增强（Clock / Weather / Mock 数据 / 首页精美化）
 - S1：Vite 工程骨架
@@ -56,4 +74,6 @@
 | #6 | 2026-03-31 | S2 第二波：Clock + Weather |
 | #7 | 2026-03-31 | S2 封板，S3 数据模型设计 |
 | #8 | 2026-04-01 | S4 解析引擎 + ImportModal |
-| #9 | 2026-04-01 | S4 战略升级：三大支柱字段注入（Account/Transaction/Parser 全线升级）|
+| #9  | 2026-04-01 | S4 战略升级：三大支柱字段注入（Account/Transaction/Parser 全线升级）|
+| #10 | 2026-04-01 | 治理全局对齐：三处代码 Bug 修复 + RULES/MEMORY/CONVENTIONS 文档同步 |
+| #11 | 2026-04-01 | S7 第一波：LedgerSwitcher + CorrectionPolicyModal + 首页集成 |
