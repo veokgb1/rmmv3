@@ -93,6 +93,21 @@
 
 ---
 
+## ✅ S8 — 全能记账舱与云端写入闭环（封板）
+
+### S8 完成清单（V3-指令-08，2026-04-01）
+- [x] `src/services/firebase/billService.ts`：新增 `addTransaction()`（addDoc + serverTimestamp，返回新文档 ID）
+- [x] `src/components/input/OmniInputModal.tsx`：底部抽屉全能记账舱
+  - 三 Tab：✍️ 手写录入（激活）/ 🎤 语音（S9占位）/ 📸 拍照（S9占位）
+  - 手写表单：支出/收入/预支出切换、大字金额输入框、分类 Tag 选择、日期、备注
+  - 保存：表单校验（金额>0）→ addTransaction() → 成功关闭（不手动更新 Store，onSnapshot 自动重绘）
+  - 提交状态机：idle → saving → success(✅) / error(❌)
+- [x] `src/pages/HomePage.tsx`：FAB 悬浮按钮（右下角，bottom-20 避开底部导航）+ OmniInputModal 挂载
+- [x] `tailwind.config.js`：新增 `slideUp` 关键帧动画（抽屉滑入效果）
+- [x] TypeScript 零错误 + Vite build 3.09s
+
+**单向数据流闭环**：表单保存 → Firestore addDoc → onSnapshot 推送 → billStore 更新 → 看板自动重绘
+
 ## ✅ S7 — Firestore 实时联动全面落地（封板）
 
 ### S7 实时化完成清单（V3-指令-07，2026-04-01）

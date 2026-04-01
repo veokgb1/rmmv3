@@ -108,6 +108,17 @@ export default {
         'safe-bottom': 'env(safe-area-inset-bottom)', // iOS 底部安全区
         '18': '4.5rem',  // 72px：底部导航高度预留
       },
+
+      // ── 自定义动画 ──────────────────────────────────────────
+      keyframes: {
+        slideUp: {
+          '0%':   { transform: 'translateY(100%)', opacity: '0' },
+          '100%': { transform: 'translateY(0)',    opacity: '1' },
+        },
+      },
+      animation: {
+        slideUp: 'slideUp 0.25s ease-out',
+      },
     },
   },
 

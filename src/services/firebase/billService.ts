@@ -1,14 +1,39 @@
-// billService — 账单 Firestore 读写服务 (S5)
+// billService — 账单 Firestore 读写服务 (S5+S8)
 // 封装 transactions 集合的 CRUD 操作
 // useBills.correct() 纠偏完成后通过此服务将修改持久化到云端
 
 import {
-  doc,
+  doc, addDoc,
   updateDoc,
   writeBatch,
+  collection,
+  serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '@/config/firebase'
 import type { Transaction } from '@/types/Transaction.types'
+
+// ─────────────────────────────────────────────────────────────
+// addTransaction — 新增一条账单到 Firestore
+//
+// 设计：不传 id（由 Firestore addDoc 自动生成），不传 createdAt/updatedAt
+// （由 serverTimestamp() 注入，保证多端时间一致）
+//
+// 写入后 onSnapshot 会自动推送新数据到 billStore → UI 自动重绘
+// 调用方无需手动更新本地 Store
+//
+// @returns 新生成的 Firestore 文档 ID
+// ─────────────────────────────────────────────────────────────
+export async function addTransaction(
+  data: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'>,
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'transactions'), {
+    ...data,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+  console.debug('[billService] 新账单已写入 Firestore:', ref.id)
+  return ref.id
+}
 
 // ─────────────────────────────────────────────────────────────
 // updateTransaction — 单条账单修改写入 Firestore

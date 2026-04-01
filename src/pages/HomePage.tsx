@@ -11,6 +11,7 @@ import {
 import ImportModal           from '@/components/import/ImportModal'
 import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
+import OmniInputModal        from '@/components/input/OmniInputModal'
 import MonthlyBarChart       from '@/components/statistics/MonthlyBarChart'
 import CategoryPieChart      from '@/components/statistics/CategoryPieChart'
 import StatCards             from '@/components/statistics/StatCards'
@@ -193,6 +194,7 @@ function HomePage() {
   const [importOpen,      setImportOpen]      = useState(false)
   const [correctionOpen,  setCorrectionOpen]  = useState(false)
   const [correctionCtx,   setCorrectionCtx]   = useState<CorrectionCtx | null>(null)
+  const [omniOpen,        setOmniOpen]        = useState(false)
 
   // ── useBills 的 correct 函数（带账套隔离保证） ────────────
   const { correct } = useBills()
@@ -280,7 +282,10 @@ function HomePage() {
           <span className="text-sm font-medium text-content-primary">导入账单</span>
           <span className="text-xs text-content-tertiary">微信 / 支付宝</span>
         </button>
-        <button className="card card-hover flex flex-col items-center py-4 gap-2 no-select">
+        <button
+          onClick={() => setOmniOpen(true)}
+          className="card card-hover flex flex-col items-center py-4 gap-2 no-select"
+        >
           <div className="w-10 h-10 rounded-xl bg-income-bg flex items-center justify-center text-xl">✏️</div>
           <span className="text-sm font-medium text-content-primary">手动记账</span>
           <span className="text-xs text-content-tertiary">快速录入一笔</span>
@@ -588,7 +593,25 @@ function HomePage() {
         </>
       )}
 
+      {/* ══ FAB：全能记账入口（右下角悬浮按钮）══════════════ */}
+      <button
+        onClick={() => setOmniOpen(true)}
+        className="fixed bottom-20 right-5 z-30
+                   w-14 h-14 rounded-full bg-primary-600 text-white
+                   flex items-center justify-center text-2xl
+                   shadow-fab hover:bg-primary-700 active:scale-95
+                   transition-all duration-150"
+        title="记一笔"
+        aria-label="记一笔"
+      >
+        ＋
+      </button>
+
       {/* ══ 弹窗挂载区 ════════════════════════════════════════ */}
+      <OmniInputModal
+        isOpen={omniOpen}
+        onClose={() => setOmniOpen(false)}
+      />
       <ImportModal
         isOpen={importOpen}
         onClose={() => setImportOpen(false)}
