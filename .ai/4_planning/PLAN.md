@@ -13,9 +13,10 @@
 | **S4** | 解析引擎 | CSV解析器、ImportModal、三大战略字段注入 | ✅ 封板 |
 | **S5** | Firebase 接入 | 用户认证 + 账单写入 Firestore | ⏳ 等待 Firebase Config |
 | **S6** | 统计图表 | 月度趋势、分类饼图、OCR核对UI | ⏳ 待开始 |
-| **S7** | 权限与多账套 | 账套切换UI、RBAC、溯及既往修正 | ⏳ 待开始 |
-| **S8** | 数据导出 | 按账套导出 CSV/Excel | ⏳ 待开始 |
-| **S9** | 优化上线 | 性能优化、Firebase Hosting | ⏳ 待开始 |
+| **S7** | 权限与多账套 | 账套切换UI、RBAC、溯及既往修正 | 🔄 进行中 |
+| **S8** | 协作与权限隔离 | 账套成员邀请、角色权限管控（只读/编辑/管理） | ⏳ 待开始 |
+| **S9** | 数据导出 | 按账套导出 CSV/Excel | ⏳ 待开始 |
+| **S10** | 优化上线 | 性能优化、Firebase Hosting | ⏳ 待开始 |
 | **SX** | 收尾增强 | 换皮肤 / 模型中控台 / OCR强化 | ⏳ 最终收尾 |
 
 ---
@@ -108,18 +109,77 @@ ledgers/mingpao-to      → Ming Pao Toronto
 
 ---
 
-## ⏳ S8 — 数据导出
+## ⏳ S8 — 协作与权限隔离
+
+> **前置条件**：依赖 S5 Firebase Auth（uid 鉴权）+ Ledger.members[] 模型（S7 已完成底层注入）
+>
+> **架构基础**：`Ledger.members[]` 成员集合制已在 S7 RBAC Prep 完成，
+> 此阶段实现完整的协作入口 UI 和 Firestore 安全规则落地。
+
+### 8.1 账套成员邀请流程
+- [ ] `InviteMemberModal.tsx`：邀请成员弹窗
+  - 输入对方 Email / UID → 选择角色（viewer / editor / admin）→ 发送邀请
+  - 邀请状态：pending → accepted / rejected（Firestore `invitations` 子集合）
+- [ ] `src/services/firebase/memberService.ts`：成员管理服务
+  - `inviteMember(ledgerId, email, role)` — 写入邀请记录
+  - `acceptInvitation(invitationId)` — 接受邀请，追加到 `ledger.members[]` + 子集合
+  - `removeMember(ledgerId, userId)` — 移除成员（仅 admin/owner 可操作）
+  - `transferOwnership(ledgerId, newOwnerUid)` — 账套转让（owner 专属）
+- [ ] 邀请通知：Firestore `notifications` 集合 + 前端 Badge 提示
+
+### 8.2 角色权限管控（RBAC 前端执行层）
+- [ ] `usePermission(ledgerId)` Hook：封装当前用户在指定账套的角色查询
+  ```typescript
+  // 用法示例
+  const { canWrite, canManageMembers, isOwner } = usePermission(activeLedgerId)
+  ```
+- [ ] 前端权限守卫：基于 `canWrite` / `canManageMembers` 控制按钮显示/禁用
+  - 只读用户（viewer）：导入按钮隐藏、纠偏按钮禁用
+  - 编辑用户（editor）：可录入账单，无法进入成员管理
+  - 管理员（admin）：可邀请/移除成员，不可删除账套
+  - 所有者（owner）：全部功能解锁
+
+### 8.3 Firestore 安全规则（与 S5 Firebase 接入同步落地）
+- [ ] `firestore.rules`：基于 `members` 数组的复合鉴权规则
+  ```javascript
+  // 账套读取：members 数组中存在当前 uid
+  function isMember(ledgerId) {
+    return request.auth.uid in
+      get(/databases/$(db)/documents/ledgers/$(ledgerId)).data.members
+      .map(m, m.userId);
+  }
+  // 账单写入：role 需为 editor/admin/owner
+  function canWrite(ledgerId) {
+    let members = get(/databases/$(db)/documents/ledgers/$(ledgerId)).data.members;
+    let myMember = members.filter(m, m.userId == request.auth.uid)[0];
+    return myMember.role in ['editor', 'admin', 'owner'];
+  }
+  ```
+- [ ] 成员管理操作权限（admin+owner）
+- [ ] 账套删除权限（owner 专属）
+- [ ] 跨账套读取硬性封锁（`ledgerId` 字段必须匹配）
+
+### 8.4 LedgerSettingsPage（账套设置页）
+- [ ] 基本信息编辑（名称 / 货币 / 时区 / 描述）
+- [ ] 成员列表（展示头像/昵称/角色）
+- [ ] 邀请入口 → `InviteMemberModal`
+- [ ] 危险区：归档账套 / 转让所有权 / 删除账套（需二次确认）
+
+---
+
+## ⏳ S9 — 数据导出
 
 - [ ] 按当前活跃账套 + 日期范围筛选导出
 - [ ] 支持 CSV / Excel 格式
 
 ---
 
-## ⏳ S9 — 优化上线
+## ⏳ S10 — 优化上线
 
 - [ ] 懒加载与代码分割
 - [ ] Firebase Hosting 部署
 - [ ] PWA 配置（可选）
+
 
 ---
 

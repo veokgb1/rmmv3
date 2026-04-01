@@ -66,6 +66,22 @@
 - [ ] Firestore Security Rules：多账套 RBAC 权限规则
 - [ ] `LedgerSettingsPage.tsx`：账套管理页面（目前"管理账套"按钮已预留入口）
 
+### ⚠️ S7 RBAC 架构补丁（2026-04-01 注入）
+> **架构转变备忘**：已完成从「单用户私有账本」→「多用户共享账套」的底层模型升级。
+> 核心变更：`Ledger.ownerUid: string` → `Ledger.members: LedgerMember[]`
+>
+> **S5 接入 Firebase 时强制约束**：
+> - 数据库读写必须兼容成员鉴权逻辑（Security Rules 基于 `members` 数组，非 `ownerUid`）
+> - `billService.ts` 写入账单前须调用 `canWrite(ledger, uid)` 验证权限
+> - `ledgerService.fetchUserLedgers()` 须通过子集合 `collectionGroup('members').where('userId','==',uid)` 反查用户所属账套
+> - 任何跨账套操作须通过 `assertLedgerScope()` 红线守卫
+
+已同步文档：
+- [x] `src/types/Ledger.types.ts`：成员集合制类型 + 四个 RBAC 工具函数
+- [x] `src/mock/ledgers.mock.ts`：三账套 Mock 数据（含多角色演示）
+- [x] `docs/03_FIRESTORE_SCHEMA.md`：Schema 升级至 S8-RBAC-Prep 版本
+- [x] `.ai/4_planning/PLAN.md`：新增 S8 协作与权限隔离阶段
+
 ---
 
 ## ✅ 历史封板阶段
@@ -88,3 +104,4 @@
 | #9  | 2026-04-01 | S4 战略升级：三大支柱字段注入（Account/Transaction/Parser 全线升级）|
 | #10 | 2026-04-01 | 治理全局对齐：三处代码 Bug 修复 + RULES/MEMORY/CONVENTIONS 文档同步 |
 | #11 | 2026-04-01 | S7 第一波：LedgerSwitcher + CorrectionPolicyModal + 首页集成 |
+| #12 | 2026-04-01 | S7 第二波：Zustand 状态机 + 纠偏引擎 + 账套物理联动 + RBAC 架构补丁（members[]） |

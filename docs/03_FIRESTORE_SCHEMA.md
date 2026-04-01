@@ -1,5 +1,5 @@
 # RMMV3 Firestore 数据库设计文档
-> 版本：S3 | 更新日期：2026-03-31
+> 版本：S8-RBAC-Prep | 更新日期：2026-04-01
 > 核心设计原则：以 `ledgerId` 实现多账套逻辑隔离，以 `userId` 记录操作者
 
 ---
@@ -105,40 +105,90 @@ Firestore Database
 **路径**：`ledgers/{ledgerId}`
 **文档 ID**：人类可读的语义 ID（如 `personal` / `mingpao-ca`）
 
+> ⚠️ **S8 架构变更**：`ownerUid` 字段已废弃，替换为 `members[]` 成员集合。
+> 旧版单主制无法支持多人协作，新版成员集合制是 RBAC 的基础数据结构。
+> Firestore Security Rules 将基于 `members` 数组（而非 `ownerUid`）进行鉴权。
+
+#### 3.2.1 主文档字段
+
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `id` | string | ✅ | 与文档 ID 一致 |
 | `name` | string | ✅ | 账套显示名称 |
 | `type` | string | ✅ | `personal` / `family` / `enterprise` |
-| `ownerUid` | string | ✅ | 所有者的 Firebase Auth UID |
 | `currency` | string | ✅ | 主货币，ISO 4217 |
 | `timezone` | string | ✅ | 时区，IANA |
+| **`members`** | **LedgerMember[]** | ✅ | **成员列表（含角色），取代旧版 `ownerUid`** |
 | `description` | string | ❌ | 账套描述 |
 | `logoUrl` | string | ❌ | 账套图标 URL |
 | `createdAt` | number | ✅ | 创建时间戳（毫秒） |
 | `updatedAt` | number | ✅ | 最后更新时间戳（毫秒） |
 | `isArchived` | boolean | ✅ | 是否归档（默认 false） |
 
-**已规划账套文档**：
+#### 3.2.2 `members` 数组元素结构（内嵌 + 子集合双写）
 
-```
-ledgers/personal        → 个人日常账本（默认）
-ledgers/ledger-elderly  → 特定老年人账本
-ledgers/mingpao-ca      → Ming Pao Canada（企业账套）
-ledgers/mingpao-to      → Ming Pao Toronto（企业账套）
-```
-
-#### 3.2.1 `ledgers/{ledgerId}/members` 子集合
-
-**路径**：`ledgers/{ledgerId}/members/{userId}`
-**文档 ID**：成员的 Firebase Auth UID
+> **双写策略**：`members` 数组内嵌在账套文档中（供 Security Rules 直接访问），
+> 同时冗余写入子集合 `ledgers/{id}/members/{uid}`（支持"查我参与的账套"反向查询）。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `userId` | string | ✅ | 成员 UID |
+| `userId` | string | ✅ | 成员的 Firebase Auth UID |
 | `role` | string | ✅ | `viewer` / `editor` / `admin` / `owner` |
-| `joinedAt` | number | ✅ | 加入时间戳（毫秒） |
-| `nickname` | string | ❌ | 该成员在此账套的显示名 |
+| `joinedAt` | number | ✅ | 加入时间戳（毫秒，邀请接受时写入） |
+| `invitedBy` | string | ❌ | 邀请人的 UID（审计用） |
+| `nickname` | string | ❌ | 该成员在此账套的自定义显示名 |
+
+**角色权限矩阵**：
+
+| 操作 | viewer | editor | admin | owner |
+|------|:------:|:------:|:-----:|:-----:|
+| 查看账单/报表 | ✅ | ✅ | ✅ | ✅ |
+| 录入/修改账单 | ❌ | ✅ | ✅ | ✅ |
+| 邀请/移除成员 | ❌ | ❌ | ✅ | ✅ |
+| 修改账套设置 | ❌ | ❌ | ✅ | ✅ |
+| 删除账套 | ❌ | ❌ | ❌ | ✅ |
+| 转让所有权 | ❌ | ❌ | ❌ | ✅ |
+
+**示例文档（明报加拿大）**：
+
+```json
+{
+  "id": "mingpao-ca",
+  "name": "Ming Pao Canada",
+  "type": "enterprise",
+  "currency": "CAD",
+  "timezone": "America/Toronto",
+  "members": [
+    { "userId": "uid-owner", "role": "owner",  "joinedAt": 1711900800000 },
+    { "userId": "uid-fin01", "role": "editor", "joinedAt": 1711900800000,
+      "nickname": "财务专员", "invitedBy": "uid-owner" }
+  ],
+  "createdAt": 1711900800000,
+  "updatedAt": 1711900800000,
+  "isArchived": false
+}
+```
+
+**已规划账套文档**：
+
+```
+ledgers/personal        → 个人日常账本（members: [owner]）
+ledgers/ledger-elderly  → 特定老年人账本（members: [owner, admin(配偶)]）
+ledgers/mingpao-ca      → Ming Pao Canada（members: [owner, editor(财务)]）
+ledgers/mingpao-to      → Ming Pao Toronto（members: [owner, editor(财务)]）
+```
+
+#### 3.2.3 `ledgers/{ledgerId}/members` 子集合（反向查询辅助）
+
+**路径**：`ledgers/{ledgerId}/members/{userId}`
+**文档 ID**：成员的 Firebase Auth UID
+**用途**：支持 `collectionGroup('members').where('userId','==',uid)` 查询"我参与了哪些账套"
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `userId` | string | 与文档 ID 一致 |
+| `role` | string | 与主文档 members 数组保持同步 |
+| `joinedAt` | number | 加入时间戳 |
 
 ---
 
