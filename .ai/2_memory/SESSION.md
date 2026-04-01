@@ -61,6 +61,15 @@
 - [x] `src/pages/HomePage.tsx`：全面接入 useBills/useLedger，账套切换 → 数据物理联动
 - [x] TypeScript 零错误，Vite build 1.16s，60 模块
 
+### S7 综合封板补丁（V3-指令-03-综合，2026-04-01）
+- [x] `src/types/Transaction.types.ts`：注入预支出基因（§3.10）
+  - `status: 'expected' | 'cleared' | 'void'`（必填，默认 cleared）
+  - `offsetByTxId?: string`（平替/报销轧账关联字段）
+- [x] `src/mock/transactions.mock.ts`：所有 20 条记录补齐 `status: 'cleared'`
+- [x] `src/pages/HomePage.tsx`：账单视图 Tab 栏（已结清 + 预支出🚧 S9 占位，disabled）
+- [x] `.ai/4_planning/PLAN.md`：SX.5 垫资报销与公私隔离审批流规划注入
+- [x] TypeScript 零错误（tsc --noEmit）
+
 ### S7 待完成（后续波次）
 - [ ] `src/services/firebase/correctionService.ts`：S5 接入后写入 Firestore（替换 Mock 打印）
 - [ ] Firestore Security Rules：多账套 RBAC 权限规则

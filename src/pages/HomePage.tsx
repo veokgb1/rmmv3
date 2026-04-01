@@ -248,6 +248,30 @@ function HomePage() {
         </button>
       </div>
 
+      {/* ══ 账单视图 Tab 栏 ══════════════════════════════════ */}
+      <div className="flex items-center gap-2 mb-4">
+        {/* 已结清 Tab — 当前激活 */}
+        <button className="flex-1 py-2 text-xs font-semibold rounded-xl
+                           bg-primary-600 text-white shadow-sm">
+          ✅ 已结清
+        </button>
+        {/* 预支出 Tab — 待开发占位 */}
+        <button
+          disabled
+          className="flex-1 py-2 text-xs font-medium rounded-xl
+                     bg-surface-overlay text-content-tertiary
+                     opacity-60 cursor-not-allowed relative"
+          title="预支出管理 · 开发中"
+        >
+          <span>📅 预支出</span>
+          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5
+                           bg-amber-100 text-amber-600 text-[10px] font-bold
+                           rounded-full leading-none">
+            🚧 S9
+          </span>
+        </button>
+      </div>
+
       {/* ══ 纠偏演示入口条 ════════════════════════════════════ */}
       <div className="flex items-center justify-between px-3.5 py-2.5 mb-4
                       bg-amber-50 rounded-xl border border-amber-100">

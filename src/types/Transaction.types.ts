@@ -162,6 +162,38 @@ export interface Transaction {
   isDuplicate?: boolean   // 疑似重复标记（人工确认后清除）
   isVerified?:  boolean   // 人工核实完成标记
 
+    // ── § 3.10 预支出与平替基因 ──────────────────────────────
+  /**
+   * status — 账单的生命周期状态
+   *
+   * expected  : 预支出 / 待发生 — 已录入但尚未实际产生的交易
+   *             典型场景：预订房间后先记一笔，实际到账再 cleared；
+   *             或"计划本月还花呗"先记，还款后更新为 cleared
+   * cleared   : 已结清 — 交易已实际发生（默认状态）
+   * void      : 已作废 — 该笔记录无效（如预支出取消、重复录入）
+   *
+   * status 与金额的关系：
+   *   expected 状态的账单参与"未来预算"统计，
+   *   不纳入"已实现净收支"（前端 useBills 需按此过滤）
+   *
+   * S8 阶段实现"预支出管理"UI 面板
+   */
+  status: 'expected' | 'cleared' | 'void'
+
+  /**
+   * offsetByTxId — 指向"抵消"此笔账单的目标账单 ID
+   *
+   * 平替/对冲场景：
+   *   A: 某员工垫资出差（expense, status='cleared'）
+   *   B: 公司报销到账（income, status='cleared', offsetByTxId = A.id）
+   *   → UI 可将 A-B 聚合展示为"已报销"，净额为 0
+   *
+   *   也可用于"货款未到先记 expected → 到账后新建 cleared 并 offset 原记录"
+   *
+   * 注：offsetByTxId 不做跨账套引用，若需跨账套对冲请使用 clonedFromId 血缘链
+   */
+  offsetByTxId?: string
+
   // ── § 3.9 跨账套数据血缘（Data Pedigree） ────────────────
   /**
    * clonedFromId — 该记录克隆自哪条原始记录的 ID
@@ -213,7 +245,7 @@ export type TransactionInput = Omit<
 export type TransactionUpdate = Partial<
   Pick<Transaction,
     | 'date' | 'amount' | 'category' | 'subCategory' | 'description'
-    | 'tags' | 'accountId'
+    | 'tags' | 'accountId' | 'status'
     | 'isVerified' | 'isDuplicate' | 'ocrStatus'
   >
 >

@@ -1,5 +1,5 @@
-// Mock 账单数据中心 — S7 升级版
-// 新增：所有记录补齐 Transaction 必填字段（ledgerId / tags / accountId / sourceType / createdAt / updatedAt）
+// Mock 账单数据中心 — S7 升级版 + 预支出基因注入
+// 新增：所有记录补齐 status 字段（默认 'cleared'），预支出基因底层落地
 // 三套账本数据分布：personal（12条）/ ledger-elderly（4条）/ mingpao-ca（4条）
 
 import type { Transaction } from '@/types/Transaction.types'
@@ -32,7 +32,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
   // ══════════════════════════════════════════════════════════
 
   {
-    id: 'mock-001', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-001', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 2),
     amount: -38.5,
@@ -43,7 +43,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '餐饮', amount: -38.5 },
   },
   {
-    id: 'mock-002', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-002', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 3),
     amount: -23.0,
@@ -54,7 +54,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '交通', amount: -23.0 },
   },
   {
-    id: 'mock-003', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-003', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 5),
     amount: -1299.0,
@@ -65,7 +65,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '购物', amount: -1299.0 },
   },
   {
-    id: 'mock-004', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-004', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 7),
     amount: -15.0,
@@ -76,7 +76,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '餐饮', amount: -15.0 },
   },
   {
-    id: 'mock-005', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-005', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 8),
     amount: -6.0,
@@ -87,7 +87,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '交通', amount: -6.0 },
   },
   {
-    id: 'mock-006', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-006', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 10),
     amount: -128.0,
@@ -98,7 +98,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '娱乐', amount: -128.0 },
   },
   {
-    id: 'mock-007', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-007', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 12),
     amount: -2800.0,
@@ -109,7 +109,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '居住', amount: -2800.0 },
   },
   {
-    id: 'mock-008', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-008', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 14),
     amount: -56.0,
@@ -120,7 +120,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '餐饮', amount: -56.0 },
   },
   {
-    id: 'mock-009', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-009', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(thisYear, thisMonth, 15),
     amount: 12500.0,
@@ -131,7 +131,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '工资', amount: 12500.0 },
   },
   {
-    id: 'mock-014', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-014', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 15),
     amount: 12500.0,
@@ -142,7 +142,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '工资', amount: 12500.0 },
   },
   {
-    id: 'mock-015', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-015', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 20),
     amount: -89.0,
@@ -153,7 +153,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '购物', amount: -89.0 },
   },
   {
-    id: 'mock-016', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-016', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'personal', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 22),
     amount: -12.0,
@@ -169,7 +169,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
   // ══════════════════════════════════════════════════════════
 
   {
-    id: 'mock-010', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-010', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'ledger-elderly', userId: 'mock-user',
     date: d(thisYear, thisMonth, 16),
     amount: -188.0,
@@ -180,7 +180,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '医疗', amount: -188.0 },
   },
   {
-    id: 'mock-011', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-011', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'ledger-elderly', userId: 'mock-user',
     date: d(thisYear, thisMonth, 18),
     amount: -45.0,
@@ -191,7 +191,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '餐饮', amount: -45.0 },
   },
   {
-    id: 'mock-017', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-017', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'ledger-elderly', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 25),
     amount: -2800.0,
@@ -202,7 +202,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '居住', amount: -2800.0 },
   },
   {
-    id: 'mock-018', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-018', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'ledger-elderly', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 26),
     amount: -62.0,
@@ -218,7 +218,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
   // ══════════════════════════════════════════════════════════
 
   {
-    id: 'mock-012', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-012', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'mingpao-ca', userId: 'mock-user',
     date: d(thisYear, thisMonth, 20),
     amount: 500.0,
@@ -229,7 +229,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '副业收入', amount: 500.0 },
   },
   {
-    id: 'mock-013', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-013', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'mingpao-ca', userId: 'mock-user',
     date: d(thisYear, thisMonth, 22),
     amount: -399.0,
@@ -240,7 +240,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '教育', amount: -399.0 },
   },
   {
-    id: 'mock-019', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-019', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'mingpao-ca', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 28),
     amount: -18.0,
@@ -251,7 +251,7 @@ export const MOCK_TRANSACTIONS: Transaction[] = [
     originalParsedData: { category: '娱乐', amount: -18.0 },
   },
   {
-    id: 'mock-020', createdAt: BASE_TS, updatedAt: BASE_TS,
+    id: 'mock-020', createdAt: BASE_TS, updatedAt: BASE_TS, status: 'cleared',
     ledgerId: 'mingpao-ca', userId: 'mock-user',
     date: d(lastMonthYear, lastMonth, 28),
     amount: 200.0,
