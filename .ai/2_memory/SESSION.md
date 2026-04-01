@@ -2,17 +2,25 @@
 
 ---
 
-## ▶ 当前阶段：S4 — 账单解析引擎（已完成核心交付）
+## ✅ 当前阶段：S4 — 账单解析引擎（战略升级版，封板归档）
 
-### S4 完成清单
-- [x] `src/types/ParseResult.types.ts`：S4 版本（ParsedTransaction 中间态类型）
+### S4 基础解析引擎（完成清单）
+- [x] `src/types/ParseResult.types.ts`：S4 战略升级版（ParsedTransaction 含三大战略字段）
 - [x] `src/services/parsers/parseUtils.ts`：公共工具（mapCategory / parseAmount / parseDate / parseCsvLine / buildRowMap）
 - [x] `src/services/parsers/wechatParser.ts`：微信账单解析器（STEP 1-7）
 - [x] `src/services/parsers/alipayParser.ts`：支付宝账单解析器（STEP 1-7）
 - [x] `src/services/parsers/index.ts`：主入口（detectSource + parseBillText）
 - [x] `src/components/import/ImportModal.tsx`：导入弹窗（粘贴→解析→预览三阶段）
 - [x] `HomePage.tsx`：导入按钮接入 ImportModal
-- [x] TypeScript 零错误，Vite build 成功（1.09s）
+
+### S4 战略升级（三大支柱注入，完成清单）
+- [x] `src/types/Account.types.ts`：资金账户类型 + `guessAccountId()` 自动推断
+- [x] `src/types/Transaction.types.ts`：注入 tags / accountId / sourceType / originalParsedData / isManuallyEdited / ocrStatus / ocrConfidence / ocrDoubtSpans / CorrectionPolicy / CorrectionIntent
+- [x] `src/types/ParseResult.types.ts`：ParsedTransaction 同步三大战略字段
+- [x] `src/services/parsers/wechatParser.ts`：填充 tags / accountId / sourceType / originalParsedData / ocrConfidence / ocrDoubtSpans
+- [x] `src/services/parsers/alipayParser.ts`：同上
+- [x] `.ai/4_planning/PLAN.md`：S6 OCR UI 规格 / S7 CorrectionPolicyModal / SX.2 模型中控台适配层 全部更新
+- [x] TypeScript 零错误，Vite build 成功（1.14s）
 
 ### S4 未完成（等待 Firebase Config）
 - [ ] `src/services/firebase/billService.ts`：解析后写入 Firestore
@@ -48,3 +56,4 @@
 | #6 | 2026-03-31 | S2 第二波：Clock + Weather |
 | #7 | 2026-03-31 | S2 封板，S3 数据模型设计 |
 | #8 | 2026-04-01 | S4 解析引擎 + ImportModal |
+| #9 | 2026-04-01 | S4 战略升级：三大支柱字段注入（Account/Transaction/Parser 全线升级）|

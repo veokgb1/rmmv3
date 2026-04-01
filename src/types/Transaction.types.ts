@@ -1,66 +1,219 @@
-// 账单核心数据类型定义 — S3 版本（加入 ledgerId 多账套支持）
-// 所有层（Service / Hook / Store / Component）共享此类型，不得各自重复定义
+// 账单核心数据类型定义 — S4 战略升级版
+// 注入三大战略支柱：多账套隔离、手写体溯源、模型中控预留
+// 所有层共享此类型，不得各自重复定义
 
 // ── 重导出分类类型（保持统一导入路径） ──────────────────────
 export type { SystemCategory as CategoryName } from './Category.types'
 
-// ── 账单来源枚举 ──────────────────────────────────────────────
-/** 账单数据来源标识 */
-export type TransactionSource = 'wechat' | 'alipay' | 'manual' | 'bank'
+// ════════════════════════════════════════════════════════════
+// § 1  基础枚举类型
+// ════════════════════════════════════════════════════════════
 
-// ── 核心账单记录类型 ──────────────────────────────────────────
 /**
- * Transaction — 统一的账单记录结构（S3 版本）
- *
- * 重要变更（S3 新增）：
- *   加入 `ledgerId` 作为顶层隔离键，所有查询必须以此为第一过滤条件。
- *   数据在 Firestore 中以扁平结构存储于 `transactions` 集合，
- *   通过 (ledgerId + userId) 复合索引实现隔离，无需嵌套子集合。
+ * TransactionSource — 账单数据来自哪个平台
+ * （与 sourceType 区分：source=平台，sourceType=录入方式）
  */
-export interface Transaction {
-  // ── 系统字段（自动生成，写入时不需要提供） ────────────────
-  id:        string   // Firestore 文档 ID（自动生成）
-  createdAt: number   // 写入时间戳（毫秒，Firebase Timestamp 转换后）
-  updatedAt: number   // 最后修改时间戳（毫秒）
+export type TransactionSource = 'wechat' | 'alipay' | 'manual' | 'bank' | 'ocr'
 
-  // ── 隔离键（查询第一条件，索引必建） ─────────────────────
-  ledgerId:  string   // 账套 ID（如 'personal' / 'mingpao-ca'）
-  userId:    string   // 操作用户的 UID（记录是谁录入的）
+/**
+ * SourceType — 账单的录入方式（输入渠道）
+ * csv    : 用户上传/粘贴 CSV 文件（目前主路径）
+ * ocr    : 拍照/扫描手写单据，由 OCR 模型识别
+ * voice  : 语音录入（未来功能）
+ * manual : 用户在 UI 表单中手动填写
+ */
+export type SourceType = 'csv' | 'ocr' | 'voice' | 'manual'
 
-  // ── 业务核心字段 ───────────────────────────────────────────
-  date:          string              // 交易日期 YYYY-MM-DD
-  amount:        number              // 金额（正数=收入，负数=支出）
-  category:      string              // 一级分类（对应 SystemCategory）
-  subCategory?:  string              // 二级分类 ID（关联 CustomCategory.id）
-  description:   string              // 交易描述/备注
+/**
+ * OcrStatus — OCR 识别状态（仅当 sourceType='ocr' 时有意义）
+ * pending   : 等待识别
+ * reviewing : AI 识别完成，等待人工核对
+ * confirmed : 人工已确认
+ * rejected  : 识别结果不可用，需重新录入
+ */
+export type OcrStatus = 'pending' | 'reviewing' | 'confirmed' | 'rejected'
 
-  // ── 来源与原始数据 ─────────────────────────────────────────
-  source:        TransactionSource           // 数据来源
-  rawData:       Record<string, unknown>     // 原始行数据（永不丢弃）
+// ════════════════════════════════════════════════════════════
+// § 2  OCR 识别存疑区域（手写体专用）
+// ════════════════════════════════════════════════════════════
 
-  // ── 数据质量标记 ───────────────────────────────────────────
-  parseError?:   string    // 解析错误描述（有值=该字段解析失败）
-  isDuplicate?:  boolean   // 疑似重复标记（人工确认后清除）
-  isVerified?:   boolean   // 人工核实标记（确认无误后设为 true）
+/**
+ * OcrDoubtSpan — 单个"识别存疑"区域
+ * 对应 S6 UI 中：存疑文字高亮（黄色底纹）+ 点击弹出原图切片对比
+ */
+export interface OcrDoubtSpan {
+  field:       string   // 存疑的字段名（如 'amount' / 'date' / 'description'）
+  rawText:     string   // AI 原始识别文字（可能有误）
+  confidence:  number   // 置信度 0-1（低于阈值时标记为存疑）
+  imageSlice?: string   // 对应的原图切片 Base64（点击存疑区域时展示）
+  suggestion?: string   // AI 给出的修正建议
 }
 
-// ── 创建账单时的输入类型 ──────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+// § 3  核心账单记录（Transaction）— 战略升级版
+// ════════════════════════════════════════════════════════════
+
 /**
- * TransactionInput — 调用方传入的创建数据
- * 排除由系统自动生成的字段（id / createdAt / updatedAt）
- * ledgerId 和 userId 由 Service 层从当前会话注入，调用方不需要传
+ * Transaction — 统一的账单记录结构（S4 战略升级版）
+ *
+ * 相比 S3 新增字段：
+ *   sourceType        — 录入方式（csv / ocr / voice / manual）
+ *   tags              — 多维标签（支持自由打标，不受分类体系限制）
+ *   accountId         — 资金账户 ID（"钱从哪里出/入"）
+ *   originalParsedData— AI/解析器的原始输出留档（人工修正后仍可溯源）
+ *   isManuallyEdited  — 是否经过人工修正
+ *   ocrStatus         — OCR 识别工作流状态（仅 sourceType='ocr' 时有意义）
+ *   ocrDoubtSpans     — OCR 存疑区域列表（驱动 S6 存疑高亮 UI）
+ *   ocrConfidence     — 整体 OCR 置信度 0-1
+ */
+export interface Transaction {
+
+  // ── § 3.1 系统字段（由 Service 层自动注入，调用方无需提供） ──
+  id:        string   // Firestore 文档 ID
+  createdAt: number   // 首次写入时间戳（毫秒）
+  updatedAt: number   // 最后修改时间戳（毫秒）
+
+  // ── § 3.2 多账套隔离键（查询第一条件，Firestore 必建索引） ──
+  ledgerId:  string   // 账套 ID（如 'personal' / 'mingpao-ca'）
+  userId:    string   // 录入者的 Firebase Auth UID
+
+  // ── § 3.3 业务核心字段 ────────────────────────────────────
+  date:         string    // 交易日期 YYYY-MM-DD
+  amount:       number    // 金额（正数=收入，负数=支出）
+  category:     string    // 一级分类（对应 SystemCategory）
+  subCategory?: string    // 二级分类 ID（关联 CustomCategory.id，可选）
+  description:  string    // 交易描述/备注
+
+  // ── § 3.4 多维标签（战略支柱①：自由标签体系） ───────────
+  /**
+   * tags — 多维度标签数组
+   * 不受分类体系约束，用于跨分类的横向聚合
+   * 示例：['年度旅行', '报销', '日本大阪', '团队活动']
+   * 未来支持标签过滤、标签云、按标签汇总报表
+   */
+  tags: string[]
+
+  // ── § 3.5 资金账户（战略支柱①：资金性质维度） ───────────
+  /**
+   * accountId — 资金账户 ID（关联 Account 集合）
+   * 记录这笔钱"从哪个账户出/入"
+   * 示例：'acc-wechat-balance'（微信零钱）/ 'acc-alipay-huabei'（花呗）
+   * CSV 解析时通过 guessAccountId() 自动推断，OCR 和手动录入由用户选择
+   */
+  accountId: string
+
+  // ── § 3.6 录入方式与溯源（战略支柱②：手写体 OCR 支持） ──
+  /**
+   * sourceType — 录入方式（与 source 字段互补）
+   * source  = 来自哪个平台（微信/支付宝/银行/手动）
+   * sourceType = 用哪种方式录入（CSV/OCR拍照/语音/表单）
+   */
+  sourceType: SourceType
+
+  /** 原始数据平台标识 */
+  source: TransactionSource
+
+  /**
+   * rawData — 原始行数据（解析时从 CSV/OCR 原始输入完整保留）
+   * 用于出现问题时的数据回溯，任何情况下不得覆盖
+   */
+  rawData: Record<string, unknown>
+
+  /**
+   * originalParsedData — AI/解析器的【首次识别结果】存档
+   * 与 rawData 的区别：
+   *   rawData          = 未经处理的原始文本（CSV 的列值 / OCR 的原始识别字符串）
+   *   originalParsedData = 解析器/AI 对 rawData 的【第一次解读结果】
+   *
+   * 使用场景：用户修正了金额或分类后，仍可点击"查看原始识别"回看 AI 的判断
+   * 这对 OCR 手写单据尤其重要：便于发现 AI 系统性识别错误并优化模型
+   */
+  originalParsedData?: Record<string, unknown>
+
+  /**
+   * isManuallyEdited — 该记录是否经过人工修正
+   * false（默认）= 保持解析器/AI 的原始输出
+   * true         = 用户手动修改过至少一个字段
+   * 用途：统计 AI 准确率、触发"溯及既往"决策弹窗
+   */
+  isManuallyEdited?: boolean
+
+  // ── § 3.7 OCR 专用字段（战略支柱②，sourceType='ocr' 时生效） ──
+  /**
+   * ocrStatus — OCR 识别工作流的当前状态
+   * 驱动 S6 阶段的"待核对"列表 UI
+   */
+  ocrStatus?: OcrStatus
+
+  /**
+   * ocrConfidence — 整体识别置信度（0-1）
+   * 低于某阈值（建议 0.85）时，UI 自动标记为"需要人工核查"
+   */
+  ocrConfidence?: number
+
+  /**
+   * ocrDoubtSpans — 字段级"识别存疑"区域列表
+   * S6 阶段 UI 将据此在字段旁渲染黄色高亮，点击弹出原图切片对比
+   */
+  ocrDoubtSpans?: OcrDoubtSpan[]
+
+  // ── § 3.8 数据质量标记 ────────────────────────────────────
+  parseError?:  string    // 解析错误描述（有值=某字段解析失败）
+  isDuplicate?: boolean   // 疑似重复标记（人工确认后清除）
+  isVerified?:  boolean   // 人工核实完成标记
+}
+
+// ════════════════════════════════════════════════════════════
+// § 4  派生类型
+// ════════════════════════════════════════════════════════════
+
+/**
+ * TransactionInput — 新建账单时的调用方输入
+ * 排除系统自动生成字段，ledgerId/userId 由 Service 层注入
  */
 export type TransactionInput = Omit<
   Transaction,
   'id' | 'createdAt' | 'updatedAt' | 'ledgerId' | 'userId'
 >
 
-// ── 更新账单时的输入类型 ──────────────────────────────────────
 /**
- * TransactionUpdate — 更新时允许修改的字段（部分更新）
- * 隔离键（ledgerId/userId）和系统字段不允许通过此类型修改
+ * TransactionUpdate — 更新账单时允许修改的字段
+ * 隔离键和系统字段不可通过此类型修改
+ * isManuallyEdited 由 Service 层自动设为 true（不需调用方传入）
  */
 export type TransactionUpdate = Partial<
-  Pick<Transaction, 'date' | 'amount' | 'category' | 'subCategory'
-                  | 'description' | 'isVerified' | 'isDuplicate'>
+  Pick<Transaction,
+    | 'date' | 'amount' | 'category' | 'subCategory' | 'description'
+    | 'tags' | 'accountId'
+    | 'isVerified' | 'isDuplicate' | 'ocrStatus'
+  >
 >
+
+// ════════════════════════════════════════════════════════════
+// § 5  补录决策策略（战略支柱①：溯及既往）
+// ════════════════════════════════════════════════════════════
+
+/**
+ * CorrectionPolicy — 修改分类/标签时的生效范围策略
+ * 当用户修改一条账单的分类或标签时，系统弹出此决策：
+ *
+ * once        : 仅修改本条记录（默认最安全）
+ * rule_forward: 创建规则，新导入的相似记录自动应用
+ * retroactive : 溯及既往，同时修改历史上所有相似记录（危险操作，需二次确认）
+ *
+ * S7 阶段实现此功能的 UI 弹窗和后端逻辑
+ */
+export type CorrectionPolicy = 'once' | 'rule_forward' | 'retroactive'
+
+/**
+ * CorrectionIntent — 用户的修正操作记录
+ * 传给 Service 层，由 Service 层根据 policy 决定写入范围
+ */
+export interface CorrectionIntent {
+  transactionId: string            // 被修正的账单 ID
+  field:         keyof TransactionUpdate // 被修正的字段
+  oldValue:      unknown           // 修正前的值（用于溯及既往时精确匹配）
+  newValue:      unknown           // 修正后的值
+  policy:        CorrectionPolicy  // 生效范围策略
+  matchRule?:    string            // 溯及既往时的匹配规则（如描述包含"美团"）
+}

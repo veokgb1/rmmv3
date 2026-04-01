@@ -1,8 +1,10 @@
-// 微信账单 CSV 解析器
+// 微信账单 CSV 解析器 — S4 战略升级版
 // 严格按照 SKILL_DATA_PARSING.md 的 STEP 1-7 执行
+// 新增：tags / accountId / sourceType / originalParsedData 字段填充
 
 import type { ParsedTransaction, ParseResult, ParseErrorItem } from '@/types/ParseResult.types'
 import { mapCategory, parseAmount, parseDate, parseCsvLine, buildRowMap } from './parseUtils'
+import { guessAccountId } from '@/types/Account.types'
 
 // ── 微信账单的元数据行数 ──────────────────────────────────────
 // 微信导出的 CSV：前16行是说明文字，第17行是表头，第18行起是数据
@@ -101,13 +103,35 @@ export function parseWechat(
     if (date   === null) parseErrors.push('DATE_PARSE_FAILED')
     if (amount === null) parseErrors.push('AMOUNT_PARSE_FAILED')
 
+    // 战略支柱①：从"支付方式"字段推断资金账户 ID
+    const accountId = guessAccountId(row[COL.METHOD])
+
+    // 首次解析结果快照（写入 originalParsedData，后续人工修正后仍可追溯）
+    const originalParsedData: Record<string, unknown> = {
+      date,                          // 解析器识别的日期
+      amount,                        // 解析器识别的金额
+      category,                      // 解析器自动分类结果
+      description,                   // 解析器拼接的描述
+      accountId,                     // 解析器推断的账户
+    }
+
     const tx: ParsedTransaction = {
+      // ── 业务核心字段 ────────────────────────────────────────
       date,
       amount,
       category,
       description,
-      source:   'wechat',
-      rawData,
+      // ── 战略支柱①：标签与资金账户 ──────────────────────────
+      tags:      [],         // CSV 解析阶段无法推断标签，留空等待用户补充
+      accountId,             // 根据支付方式字段自动推断
+      // ── 战略支柱②：录入方式与溯源 ──────────────────────────
+      sourceType:          'csv',     // 本批次为 CSV 粘贴导入
+      source:              'wechat',  // 数据平台：微信支付
+      rawData,                        // 原始 CSV 行数据（永不覆盖）
+      originalParsedData,             // 解析器首次输出快照（人工修正后仍可查）
+      // ── OCR 字段（CSV 来源全部为默认值）────────────────────
+      ocrConfidence: 1,    // CSV 来源不涉及 OCR，置信度视为完美
+      ocrDoubtSpans: [],   // CSV 来源无存疑区域
       rowIndex,
       parseError: parseErrors.length > 0 ? parseErrors.join(',') : undefined,
     }

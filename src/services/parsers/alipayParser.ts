@@ -1,8 +1,10 @@
-// 支付宝账单 CSV 解析器
+// 支付宝账单 CSV 解析器 — S4 战略升级版
 // 严格按照 SKILL_DATA_PARSING.md 的 STEP 1-7 执行
+// 新增：tags / accountId / sourceType / originalParsedData 字段填充
 
 import type { ParsedTransaction, ParseResult, ParseErrorItem } from '@/types/ParseResult.types'
 import { mapCategory, parseAmount, parseDate, parseCsvLine, buildRowMap } from './parseUtils'
+import { guessAccountId } from '@/types/Account.types'
 
 // ── 支付宝账单的元数据行数 ────────────────────────────────────
 // 支付宝导出的 CSV：前4行是说明文字，第5行是表头，第6行起是数据
@@ -108,13 +110,35 @@ export function parseAlipay(
     if (date   === null) parseErrors.push('DATE_PARSE_FAILED')
     if (amount === null) parseErrors.push('AMOUNT_PARSE_FAILED')
 
-    const tx: ParsedTransaction = {
+    // 战略支柱①：从"收/付款方式"字段推断资金账户 ID
+    const accountId = guessAccountId(row[COL.METHOD])
+
+    // 首次解析结果快照
+    const originalParsedData: Record<string, unknown> = {
       date,
       amount,
       category,
       description,
-      source:   'alipay',
+      accountId,
+    }
+
+    const tx: ParsedTransaction = {
+      // ── 业务核心字段 ────────────────────────────────────────
+      date,
+      amount,
+      category,
+      description,
+      // ── 战略支柱①：标签与资金账户 ──────────────────────────
+      tags:      [],         // 解析阶段留空
+      accountId,             // 从支付方式推断
+      // ── 战略支柱②：录入方式与溯源 ──────────────────────────
+      sourceType:          'csv',
+      source:              'alipay',
       rawData,
+      originalParsedData,
+      // ── OCR 字段默认值 ─────────────────────────────────────
+      ocrConfidence: 1,
+      ocrDoubtSpans: [],
       rowIndex,
       parseError: parseErrors.length > 0 ? parseErrors.join(',') : undefined,
     }
