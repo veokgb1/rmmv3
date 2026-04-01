@@ -93,6 +93,24 @@
 
 ---
 
+## ✅ S5 — Firebase 云端接入（初始同步封板）
+
+### S5 完成清单（V3-指令-05，2026-04-01）
+- [x] `npm install firebase`：Firebase SDK v10 引入
+- [x] `src/vite-env.d.ts`：补充缺失的 Vite 类型声明（`import.meta.env` 类型支持）
+- [x] `src/config/firebase.ts`：Firebase 初始化引擎
+  - 6个 `VITE_FIREBASE_*` 环境变量校验（缺失则抛出明确错误）
+  - 导出 `db`（Firestore）和 `storage`（Storage）单例
+  - 连接就绪日志（绿色标注，含 projectId）
+- [x] `src/services/dbSync.ts`：初始数据云端同步服务
+  - `pushInitialData()`：3 账套（含 members[]）+ 20 条账单（含 status/tags/accountId 等全字段）
+  - 账套：`Promise.all` 并发写入；账单：`writeBatch` 批量原子写入
+  - 返回 `SyncResult`（ledgersWritten / transactionsWritten / durationMs）
+- [x] `src/pages/HomePage.tsx`：「⚡ 激活云端数据」按钮（状态机驱动，idle→loading→success/error）
+  - 成功展开条：显示写入数量 + 耗时 + Firebase Console 导航提示
+  - 失败展开条：错误信息 + 常见原因提示
+- [x] TypeScript 零错误 + Vite build 2.94s（含 Firebase SDK）
+
 ## ✅ S6 — 数据可视化看板（封板）
 
 ### S6 完成清单（V3-指令-04，2026-04-01）

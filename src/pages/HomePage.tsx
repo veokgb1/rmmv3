@@ -1,8 +1,9 @@
-// 首页 — S6 升级：数据可视化看板 + 明细/统计双视图
+// 首页 — S5+S6：Firebase 云端同步 + 数据可视化看板
 // 账套切换后，图表与账单列表同步重绘（物理级联动）
 // 数据流：LedgerSwitcher → ledgerStore → useBills → 图表/列表重渲染
 
 import { useState } from 'react'
+import { pushInitialData, type SyncResult } from '@/services/dbSync'
 import ImportModal           from '@/components/import/ImportModal'
 import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
@@ -152,6 +153,28 @@ function HomePage() {
   // ── 视图切换状态 ──────────────────────────────────────────
   const [activeSection, setActiveSection] = useState<'detail' | 'stats'>('detail')
 
+  // ── 云端同步状态机 ────────────────────────────────────────
+  type SyncState = 'idle' | 'loading' | 'success' | 'error'
+  const [syncState,  setSyncState]  = useState<SyncState>('idle')
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
+  const [syncError,  setSyncError]  = useState<string>('')
+
+  async function handlePushData() {
+    setSyncState('loading')
+    setSyncResult(null)
+    setSyncError('')
+    try {
+      const result = await pushInitialData()
+      setSyncResult(result)
+      setSyncState('success')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setSyncError(msg)
+      setSyncState('error')
+      console.error('[HomePage·sync]', err)
+    }
+  }
+
   // 取最近 8 条展示
   const recentBills = thisMonthBills.slice(0, 8)
 
@@ -251,6 +274,80 @@ function HomePage() {
           <span className="text-sm font-medium text-content-primary">手动记账</span>
           <span className="text-xs text-content-tertiary">快速录入一笔</span>
         </button>
+      </div>
+
+      {/* ══ S5 · 云端数据激活入口 ════════════════════════════ */}
+      <div className={`rounded-2xl border border-dashed mb-4 overflow-hidden transition-colors ${
+        syncState === 'success' ? 'border-emerald-200 bg-emerald-50' :
+        syncState === 'error'   ? 'border-red-200 bg-red-50' :
+                                  'border-primary-200 bg-white'
+      }`}>
+        <div className="flex items-center gap-3 px-4 py-3">
+          {/* 图标 */}
+          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-colors ${
+            syncState === 'success' ? 'bg-emerald-100' :
+            syncState === 'error'   ? 'bg-red-100'     :
+            syncState === 'loading' ? 'bg-amber-100'   : 'bg-primary-50'
+          }`}>
+            {syncState === 'loading' ? '⏳' :
+             syncState === 'success' ? '✅' :
+             syncState === 'error'   ? '❌' : '⚡'}
+          </div>
+
+          {/* 文字 */}
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-content-primary">
+              S5 · 激活云端数据
+            </p>
+            <p className="text-[11px] text-content-tertiary mt-0.5 truncate">
+              {syncState === 'loading' ? '正在写入 Firestore…请稍候' :
+               syncState === 'success' ? `${syncResult?.ledgersWritten} 账套 + ${syncResult?.transactionsWritten} 条账单已同步 · ${syncResult?.durationMs}ms` :
+               syncState === 'error'   ? '同步失败 · 查看控制台了解详情' :
+                                         '将 Mock 数据一键写入 Firestore 云端'}
+            </p>
+          </div>
+
+          {/* 按钮 */}
+          <button
+            onClick={handlePushData}
+            disabled={syncState === 'loading'}
+            className={`flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg transition-all
+              disabled:opacity-50 disabled:cursor-not-allowed ${
+              syncState === 'success' ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' :
+              syncState === 'error'   ? 'bg-red-100 text-red-700 hover:bg-red-200' :
+                                        'bg-primary-50 text-primary-700 hover:bg-primary-100'
+            }`}
+          >
+            {syncState === 'loading' ? '同步中…'  :
+             syncState === 'success' ? '再次同步' :
+             syncState === 'error'   ? '重试'     : '⚡ 激活'}
+          </button>
+        </div>
+
+        {/* 成功 Toast 展开条 */}
+        {syncState === 'success' && (
+          <div className="px-4 pb-3">
+            <div className="bg-emerald-100 rounded-xl px-3 py-2.5 text-xs text-emerald-800">
+              <p className="font-semibold mb-1">🎉 云端数据已激活！</p>
+              <p>快去 <span className="font-mono font-bold">Firebase Console → Firestore</span> 刷新看看 —</p>
+              <p className="mt-0.5 opacity-80">
+                ledgers（{syncResult?.ledgersWritten} 条）和 transactions（{syncResult?.transactionsWritten} 条）应该已出现。
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* 错误展开条 */}
+        {syncState === 'error' && syncError && (
+          <div className="px-4 pb-3">
+            <div className="bg-red-100 rounded-xl px-3 py-2 text-[11px] text-red-800 font-mono break-all">
+              {syncError.slice(0, 200)}{syncError.length > 200 ? '…' : ''}
+            </div>
+            <p className="text-[10px] text-red-500 mt-1 px-1">
+              常见原因：Firestore 安全规则未开放 / 网络问题 / 项目 ID 配置错误
+            </p>
+          </div>
+        )}
       </div>
 
       {/* ══ 明细 / 统计 主 Tab 栏 ════════════════════════════ */}
