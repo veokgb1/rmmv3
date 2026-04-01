@@ -4,6 +4,11 @@
 //   📸 拍小票      — Gemini 2.5 Flash Vision 单条识别
 //   ✨ 智能识别    — 长文本/语音 → Gemini 批量提取 → 审核舱确认 → writeBatch 一键入账
 //
+// 布局架构（S13 全局重构）：三段式 Flex
+//   ① Header  flex-shrink-0   — 把手 + 标题 + Tab 切换栏，固定不参与滚动
+//   ② Body    flex-1 min-h-0  — 各 Tab 内容区，内部独立滚动
+//   ③ Footer  flex-shrink-0   — 操作按钮，永远悬浮贴底，不被内容遮挡
+//
 // 铁律：保存成功后绝不手动操作 Store，依赖 onSnapshot 单向数据流驱动 UI 重绘
 
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -225,6 +230,9 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
 
 // ─────────────────────────────────────────────────────────────
 // 子组件：智能识别 Tab（S11 核心）
+// 架构：统一根容器 flex flex-col flex-1 min-h-0
+//   Review 态 → 内部三段式（标题固定 / 卡片滚动 / 双按钮固定）
+//   其他态    → 单一弹性滚动区
 // ─────────────────────────────────────────────────────────────
 interface SmartPanelProps {
   activeLedgerId: string
@@ -240,11 +248,11 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
   const [isSaving,    setIsSaving]    = useState(false)
 
   // ── 语音识别状态（作为 textarea 的输入辅助）────────────
-  const [isListening,   setIsListening]   = useState(false)
-  const [voiceInterim,  setVoiceInterim]  = useState('')   // 实时临时结果
-  const [voiceSeconds,  setVoiceSeconds]  = useState(60)   // 60 秒倒计时
-  const recognitionRef  = useRef<ISpeechRecognition | null>(null)
-  const countdownRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [isListening,  setIsListening]  = useState(false)
+  const [voiceInterim, setVoiceInterim] = useState('')   // 实时临时结果
+  const [voiceSeconds, setVoiceSeconds] = useState(60)   // 60 秒倒计时
+  const recognitionRef = useRef<ISpeechRecognition | null>(null)
+  const countdownRef   = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── 组件卸载时释放麦克风 + 清定时器 ──────────────────────
   useEffect(() => {
@@ -258,16 +266,12 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
   useEffect(() => {
     if (!isListening) {
       if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
-      setVoiceSeconds(60)    // 重置倒计时
+      setVoiceSeconds(60)
       return
     }
     countdownRef.current = setInterval(() => {
       setVoiceSeconds(prev => {
-        if (prev <= 1) {
-          // 时间到，自动停止
-          recognitionRef.current?.stop()
-          return 0
-        }
+        if (prev <= 1) { recognitionRef.current?.stop(); return 0 }
         return prev - 1
       })
     }, 1000)
@@ -278,16 +282,12 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
 
   // ── 语音录入：显式切换开关（第一次点击=开始，第二次点击=停止）──
   function toggleVoice() {
-    if (isListening) {
-      stopVoice()
-      return
-    }
+    if (isListening) { stopVoice(); return }
     startVoice()
   }
 
   function startVoice() {
     if (!SpeechRecognitionCtor || isListening) return
-
     const recognition = new SpeechRecognitionCtor()
     recognitionRef.current = recognition
     recognition.lang           = 'zh-CN'
@@ -304,7 +304,6 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
       }
       setVoiceInterim(interim)
       if (final) {
-        // 将最终识别结果追加到文本框（以逗号分隔）
         setInputText(prev => {
           const sep = prev.trim() ? '，' : ''
           return prev + sep + final
@@ -312,19 +311,12 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
         setVoiceInterim('')
       }
     }
-
-    recognition.onend = () => {
-      setIsListening(false)
-      setVoiceInterim('')
-    }
+    recognition.onend  = () => { setIsListening(false); setVoiceInterim('') }
     recognition.onerror = (e: ISpeechRecognitionErrorEvent) => {
       setIsListening(false)
       setVoiceInterim('')
-      if (e.error !== 'aborted') {
-        showToast?.('语音识别出错，请检查麦克风权限', 'warning')
-      }
+      if (e.error !== 'aborted') showToast?.('语音识别出错，请检查麦克风权限', 'warning')
     }
-
     setIsListening(true)
     recognition.start()
   }
@@ -338,20 +330,15 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
   async function handleParse() {
     const text = inputText.trim()
     if (!text) { showToast?.('请先输入或说出消费记录', 'warning'); return }
-
     setSmartState('parsing')
     setSmartError('')
-
     try {
       const results = await parseNaturalLanguageBatch(text)
-
       if (results.length === 0) {
         setSmartError('AI 未能从文本中识别出任何消费记录，请检查内容后重试')
         setSmartState('error')
         return
       }
-
-      // 为每条结果生成本地唯一 ID（供 React key 和内联编辑使用）
       const draftItems: DraftItem[] = results.map((r, i) => ({
         _id:      `draft-${Date.now()}-${i}`,
         amount:   r.amount,
@@ -359,7 +346,6 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
         date:     r.date,
         notes:    r.notes,
       }))
-
       setDrafts(draftItems)
       setSmartState('review')
     } catch (err) {
@@ -376,9 +362,7 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
     field: keyof Omit<DraftItem, '_id'>,
     value: string | number,
   ) => {
-    setDrafts(prev => prev.map(d =>
-      d._id === id ? { ...d, [field]: value } : d
-    ))
+    setDrafts(prev => prev.map(d => d._id === id ? { ...d, [field]: value } : d))
   }, [])
 
   // ── 移除某条草稿 ────────────────────────────────────────
@@ -387,29 +371,22 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
   }, [])
 
   // ── writeBatch 批量写入 Firestore ───────────────────────
-  // 设计：仅写 Firestore，不手动操作 billStore
-  // onSnapshot 收到新文档后自动推送到 billStore → UI 重绘（单向数据流）
+  // 铁律：仅写 Firestore，不手动操作 billStore，onSnapshot 驱动 UI 重绘
   async function handleBatchSave() {
     const valid = drafts.filter(d => d.amount > 0)
-    if (valid.length === 0) {
-      showToast?.('没有可入账的记录', 'warning')
-      return
-    }
-
+    if (valid.length === 0) { showToast?.('没有可入账的记录', 'warning'); return }
     setIsSaving(true)
     setSmartState('saving')
-
     try {
       const batch = writeBatch(db)
       const txCol = collection(db, 'transactions')
-
       for (const item of valid) {
-        const newRef = doc(txCol)    // 自动生成 Firestore 文档 ID
+        const newRef = doc(txCol)
         const txData: Omit<Transaction, 'id'> = {
           ledgerId:         activeLedgerId,
           userId:           'mock-user',
           date:             item.date,
-          amount:           -Math.abs(item.amount),  // 默认为支出（负数）
+          amount:           -Math.abs(item.amount),
           category:         item.category,
           description:      item.notes || item.category,
           source:           'manual',
@@ -424,12 +401,9 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
         }
         batch.set(newRef, txData)
       }
-
       await batch.commit()
-
       showToast?.(`✅ 已批量入账 ${valid.length} 条记录`, 'success')
       setSmartState('done')
-      // 短暂延迟后关闭弹窗，让用户看到成功状态
       setTimeout(() => onClose(), 800)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Firestore 写入失败'
@@ -452,270 +426,268 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
     setIsListening(false)
   }
 
-  // ──────────────────────────────────────────────────────────
-  // 渲染：Input 态
-  // ──────────────────────────────────────────────────────────
-  if (smartState === 'input') {
-    return (
-      <div className="px-5 pb-6 space-y-4">
+  // done 态：父组件正在关闭，不渲染
+  if (smartState === 'done') return null
 
-        {/* textarea 主输入区 */}
-        <div className="relative">
-          <textarea
-            value={inputText + (voiceInterim ? `\n[识别中：${voiceInterim}]` : '')}
-            onChange={e => setInputText(e.target.value)}
-            placeholder={`粘贴或输入消费记录，支持多笔…\n\n例如：\n昨天打车35，中午外卖28.5\n下午买了杯奶茶20，书费150`}
-            rows={6}
-            className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-sm text-content-primary
-                       border-2 border-transparent focus:border-primary-300 focus:bg-white
-                       outline-none transition-all resize-none leading-relaxed
-                       placeholder:text-gray-300"
-          />
-          {/* 字数统计 */}
-          <span className="absolute bottom-3 right-3 text-[10px] text-content-tertiary">
-            {inputText.length} 字
-          </span>
-        </div>
+  const remaining = drafts.length
 
-        {/* 语音辅助输入行 */}
-        <div className="flex items-center gap-2">
-          {isSpeechSupported ? (
-            <>
-              <button
-                onClick={toggleVoice}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold
-                            transition-all ${
-                  isListening
-                    ? 'bg-red-500 text-white'
-                    : 'bg-gray-100 text-content-secondary hover:bg-gray-200'
-                }`}
-              >
-                🎤
-                <span>{isListening ? '点击停止' : '语音追加'}</span>
+  // ──────────────────────────────────────────────────────────
+  // 统一根容器：flex flex-col flex-1 min-h-0
+  //   充满父级 Body 区域，各状态内部自行决定滚动与固定策略
+  // ──────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+
+      {/* ── Input 态：单一弹性滚动区 ──────────────────────── */}
+      {smartState === 'input' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-2 pb-6 space-y-4">
+
+          {/* textarea 主输入区 */}
+          <div className="relative">
+            <textarea
+              value={inputText + (voiceInterim ? `\n[识别中：${voiceInterim}]` : '')}
+              onChange={e => setInputText(e.target.value)}
+              placeholder={`粘贴或输入消费记录，支持多笔…\n\n例如：\n昨天打车35，中午外卖28.5\n下午买了杯奶茶20，书费150`}
+              rows={6}
+              className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-sm text-content-primary
+                         border-2 border-transparent focus:border-primary-300 focus:bg-white
+                         outline-none transition-all resize-none leading-relaxed
+                         placeholder:text-gray-300"
+            />
+            <span className="absolute bottom-3 right-3 text-[10px] text-content-tertiary">
+              {inputText.length} 字
+            </span>
+          </div>
+
+          {/* 语音辅助输入行 */}
+          <div className="flex items-center gap-2">
+            {isSpeechSupported ? (
+              <>
+                <button
+                  onClick={toggleVoice}
+                  className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold
+                              transition-all ${
+                    isListening
+                      ? 'bg-red-500 text-white'
+                      : 'bg-gray-100 text-content-secondary hover:bg-gray-200'
+                  }`}
+                >
+                  🎤
+                  <span>{isListening ? '点击停止' : '语音追加'}</span>
+                  {isListening && (
+                    <span className={`ml-1 font-bold tabular-nums ${
+                      voiceSeconds < 10 ? 'text-yellow-200' : 'text-red-100'
+                    }`}>
+                      {voiceSeconds}s
+                    </span>
+                  )}
+                </button>
                 {isListening && (
-                  <span className={`ml-1 font-bold tabular-nums ${
-                    voiceSeconds < 10 ? 'text-yellow-200' : 'text-red-100'
+                  <span className={`text-[11px] animate-pulse ${
+                    voiceSeconds < 10 ? 'text-red-500 font-semibold' : 'text-red-400'
                   }`}>
-                    {voiceSeconds}s
+                    {voiceSeconds < 10 ? '⚠️ 即将自动停止' : '正在聆听…'}
                   </span>
                 )}
-              </button>
-              {isListening && (
-                <span className={`text-[11px] animate-pulse ${
-                  voiceSeconds < 10 ? 'text-red-500 font-semibold' : 'text-red-400'
-                }`}>
-                  {voiceSeconds < 10 ? `⚠️ 即将自动停止` : '正在聆听…'}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="text-[11px] text-content-tertiary">
-              （当前浏览器不支持语音输入）
-            </span>
-          )}
-          {/* 清空按钮 */}
-          {inputText && (
-            <button
-              onClick={() => { setInputText(''); setVoiceInterim('') }}
-              className="ml-auto text-[11px] text-content-tertiary
-                         hover:text-red-400 transition-colors"
-            >
-              清空
-            </button>
-          )}
-        </div>
-
-        {/* 示例提示卡 */}
-        <div className="bg-primary-50 rounded-2xl px-4 py-3 space-y-1.5">
-          <p className="text-[11px] font-semibold text-primary-700">💡 支持以下输入格式：</p>
-          {[
-            '「昨天打车35，中午外卖28.5，买奶茶20」',
-            '「本月房租5500，水电费200，宽带99」',
-            '粘贴微信/支付宝账单截图中的文字内容',
-          ].map(ex => (
-            <p key={ex} className="text-[11px] text-primary-500 flex gap-1">
-              <span className="opacity-60">▸</span>
-              <span>{ex}</span>
-            </p>
-          ))}
-        </div>
-
-        {/* 主操作按钮 */}
-        <button
-          onClick={handleParse}
-          disabled={!inputText.trim()}
-          className="w-full py-4 rounded-2xl text-sm font-bold
-                     bg-gradient-to-r from-primary-600 to-primary-500 text-white
-                     hover:from-primary-700 hover:to-primary-600 shadow-fab
-                     active:scale-[0.98] transition-all
-                     disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
-        >
-          🤖 智能提取账单
-        </button>
-
-      </div>
-    )
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // 渲染：Parsing 态（Gemini 解析中）
-  // ──────────────────────────────────────────────────────────
-  if (smartState === 'parsing') {
-    return (
-      <div className="px-5 pb-6 flex flex-col items-center gap-5 py-8">
-        <div className="relative w-16 h-16">
-          <div className="absolute inset-0 rounded-full border-4 border-primary-200
-                          border-t-primary-500 animate-spin" />
-          <div className="absolute inset-2 rounded-full bg-primary-50
-                          flex items-center justify-center text-2xl">🤖</div>
-        </div>
-        <div className="text-center space-y-1.5">
-          <p className="text-sm font-semibold text-content-primary">
-            Gemini 正在批量解析账单…
-          </p>
-          <p className="text-xs text-content-tertiary">
-            正在识别文本中的每一笔消费记录
-          </p>
-        </div>
-        <div className="flex gap-1.5">
-          {[0,1,2].map(i => (
-            <div key={i} className="w-2 h-2 rounded-full bg-primary-400 animate-bounce"
-              style={{ animationDelay: `${i * 0.2}s` }} />
-          ))}
-        </div>
-        <p className="text-[11px] text-content-tertiary">通常 2-6 秒完成 · 文本越长耗时越久</p>
-      </div>
-    )
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // 渲染：Review 态（审核舱核心 UI）
-  // ──────────────────────────────────────────────────────────
-  if (smartState === 'review' || smartState === 'saving') {
-    const remaining = drafts.length
-
-    return (
-      <div className="pb-6">
-
-        {/* 审核舱标题栏 */}
-        <div className="px-5 py-3 bg-emerald-50 border-b border-emerald-100
-                        flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="w-7 h-7 rounded-full bg-emerald-500 text-white text-xs font-bold
-                             flex items-center justify-center">
-              {remaining}
-            </span>
-            <p className="text-sm font-semibold text-emerald-800">
-              成功识别出 {remaining} 条账单
-            </p>
-          </div>
-          <p className="text-[11px] text-emerald-600">点卡片可编辑</p>
-        </div>
-
-        {/* 可滚动的审核卡片列表 */}
-        <div className="px-5 pt-4 space-y-3 max-h-[45vh] overflow-y-auto pb-32">
-          {drafts.length === 0 ? (
-            <div className="text-center py-8">
-              <p className="text-sm text-content-tertiary">所有条目已移除</p>
-              <button
-                onClick={handleReset}
-                className="mt-3 text-xs text-primary-600 font-semibold"
-              >
-                重新输入
-              </button>
-            </div>
-          ) : (
-            drafts.map((item, index) => (
-              <DraftCard
-                key={item._id}
-                item={item}
-                index={index}
-                onChange={handleCardChange}
-                onRemove={handleCardRemove}
-              />
-            ))
-          )}
-        </div>
-
-        {/* 写入失败错误条 */}
-        {smartError && (
-          <div className="mx-5 mt-3 px-3 py-2 bg-red-50 rounded-xl border border-red-100">
-            <p className="text-xs text-red-600">⚠️ {smartError}</p>
-          </div>
-        )}
-
-        {/* 底部双按钮 */}
-        <div className="px-5 pt-4 flex gap-3">
-          {/* 清空重来 */}
-          <button
-            onClick={handleReset}
-            disabled={isSaving}
-            className="flex-1 py-3 rounded-xl border-2 border-gray-200 text-sm font-semibold
-                       text-content-secondary hover:bg-gray-50 transition-colors
-                       disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            🚫 重来
-          </button>
-          {/* 批量入账 */}
-          <button
-            onClick={handleBatchSave}
-            disabled={isSaving || drafts.length === 0}
-            className="flex-[2] py-3 rounded-xl text-sm font-bold text-white
-                       bg-primary-600 hover:bg-primary-700 shadow-fab
-                       active:scale-[0.98] transition-all
-                       disabled:opacity-50 disabled:cursor-not-allowed
-                       flex items-center justify-center gap-2"
-          >
-            {isSaving ? (
-              <>
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10"
-                    stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span>写入云端…</span>
               </>
             ) : (
-              <span>💾 确认入账 ({remaining} 条)</span>
+              <span className="text-[11px] text-content-tertiary">
+                （当前浏览器不支持语音输入）
+              </span>
             )}
+            {inputText && (
+              <button
+                onClick={() => { setInputText(''); setVoiceInterim('') }}
+                className="ml-auto text-[11px] text-content-tertiary
+                           hover:text-red-400 transition-colors"
+              >
+                清空
+              </button>
+            )}
+          </div>
+
+          {/* 示例提示卡 */}
+          <div className="bg-primary-50 rounded-2xl px-4 py-3 space-y-1.5">
+            <p className="text-[11px] font-semibold text-primary-700">💡 支持以下输入格式：</p>
+            {[
+              '「昨天打车35，中午外卖28.5，买奶茶20」',
+              '「本月房租5500，水电费200，宽带99」',
+              '粘贴微信/支付宝账单截图中的文字内容',
+            ].map(ex => (
+              <p key={ex} className="text-[11px] text-primary-500 flex gap-1">
+                <span className="opacity-60">▸</span>
+                <span>{ex}</span>
+              </p>
+            ))}
+          </div>
+
+          {/* 主操作按钮 */}
+          <button
+            onClick={handleParse}
+            disabled={!inputText.trim()}
+            className="w-full py-4 rounded-2xl text-sm font-bold
+                       bg-gradient-to-r from-primary-600 to-primary-500 text-white
+                       hover:from-primary-700 hover:to-primary-600 shadow-fab
+                       active:scale-[0.98] transition-all
+                       disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+          >
+            🤖 智能提取账单
+          </button>
+
+        </div>
+      )}
+
+      {/* ── Parsing 态：居中 Loading ─────────────────────── */}
+      {smartState === 'parsing' && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-5 px-5 py-8">
+          <div className="relative w-16 h-16">
+            <div className="absolute inset-0 rounded-full border-4 border-primary-200
+                            border-t-primary-500 animate-spin" />
+            <div className="absolute inset-2 rounded-full bg-primary-50
+                            flex items-center justify-center text-2xl">🤖</div>
+          </div>
+          <div className="text-center space-y-1.5">
+            <p className="text-sm font-semibold text-content-primary">
+              Gemini 正在批量解析账单…
+            </p>
+            <p className="text-xs text-content-tertiary">
+              正在识别文本中的每一笔消费记录
+            </p>
+          </div>
+          <div className="flex gap-1.5">
+            {[0,1,2].map(i => (
+              <div key={i} className="w-2 h-2 rounded-full bg-primary-400 animate-bounce"
+                style={{ animationDelay: `${i * 0.2}s` }} />
+            ))}
+          </div>
+          <p className="text-[11px] text-content-tertiary">通常 2-6 秒完成 · 文本越长耗时越久</p>
+        </div>
+      )}
+
+      {/* ── Review / Saving 态：三段式内部布局 ─────────────
+            ① 审核标题栏  flex-shrink-0  固定
+            ② 卡片列表    flex-1 scroll  弹性滚动
+            ③ 双操作按钮  flex-shrink-0  固定悬浮
+      ─────────────────────────────────────────────────── */}
+      {(smartState === 'review' || smartState === 'saving') && (
+        <>
+          {/* ① 审核舱标题栏（固定） */}
+          <div className="flex-shrink-0 px-5 py-3 bg-emerald-50 border-b border-emerald-100
+                          flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-7 h-7 rounded-full bg-emerald-500 text-white text-xs font-bold
+                               flex items-center justify-center">
+                {remaining}
+              </span>
+              <p className="text-sm font-semibold text-emerald-800">
+                成功识别出 {remaining} 条账单
+              </p>
+            </div>
+            <p className="text-[11px] text-emerald-600">点卡片可编辑</p>
+          </div>
+
+          {/* ② 可滚动的审核卡片列表（弹性占满剩余高度） */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-4 pb-3 space-y-3">
+            {drafts.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-sm text-content-tertiary">所有条目已移除</p>
+                <button
+                  onClick={handleReset}
+                  className="mt-3 text-xs text-primary-600 font-semibold"
+                >
+                  重新输入
+                </button>
+              </div>
+            ) : (
+              drafts.map((item, index) => (
+                <DraftCard
+                  key={item._id}
+                  item={item}
+                  index={index}
+                  onChange={handleCardChange}
+                  onRemove={handleCardRemove}
+                />
+              ))
+            )}
+          </div>
+
+          {/* 写入失败错误条（固定在按钮上方） */}
+          {smartError && (
+            <div className="flex-shrink-0 mx-5 px-3 py-2 bg-red-50 rounded-xl border border-red-100">
+              <p className="text-xs text-red-600">⚠️ {smartError}</p>
+            </div>
+          )}
+
+          {/* ③ 底部双按钮（固定悬浮，永不被卡片遮挡） */}
+          <div className="flex-shrink-0 px-5 pt-3 pb-6
+                          bg-white border-t border-gray-100
+                          shadow-[0_-4px_16px_rgba(0,0,0,0.06)]
+                          flex gap-3">
+            {/* 🚫 重来 */}
+            <button
+              onClick={handleReset}
+              disabled={isSaving}
+              className="flex-1 py-3 rounded-xl border-2 border-gray-200 text-sm font-semibold
+                         text-content-secondary hover:bg-gray-50 transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              🚫 重来
+            </button>
+            {/* 💾 确认入账 */}
+            <button
+              onClick={handleBatchSave}
+              disabled={isSaving || drafts.length === 0}
+              className="flex-[2] py-3 rounded-xl text-sm font-bold text-white
+                         bg-primary-600 hover:bg-primary-700 shadow-fab
+                         active:scale-[0.98] transition-all
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         flex items-center justify-center gap-2"
+            >
+              {isSaving ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10"
+                      stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>写入云端…</span>
+                </>
+              ) : (
+                <span>💾 确认入账 ({remaining} 条)</span>
+              )}
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ── Error 态：单一弹性滚动区 ─────────────────────── */}
+      {smartState === 'error' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-2 pb-6 space-y-4">
+          <div className="text-center py-6">
+            <div className="text-4xl mb-3">😵</div>
+            <p className="text-sm font-semibold text-content-primary mb-1">AI 暂时打了个盹</p>
+            <p className="text-xs text-content-tertiary leading-relaxed max-w-xs mx-auto">
+              {smartError}
+            </p>
+          </div>
+          <button
+            onClick={handleReset}
+            className="w-full py-3 rounded-xl bg-primary-600 text-white
+                       text-sm font-semibold hover:bg-primary-700 transition-colors"
+          >
+            🔄 重新输入
           </button>
         </div>
+      )}
 
-      </div>
-    )
-  }
-
-  // ──────────────────────────────────────────────────────────
-  // 渲染：Error 态
-  // ──────────────────────────────────────────────────────────
-  if (smartState === 'error') {
-    return (
-      <div className="px-5 pb-6 space-y-4">
-        <div className="text-center py-6">
-          <div className="text-4xl mb-3">😵</div>
-          <p className="text-sm font-semibold text-content-primary mb-1">AI 暂时打了个盹</p>
-          <p className="text-xs text-content-tertiary leading-relaxed max-w-xs mx-auto">
-            {smartError}
-          </p>
-        </div>
-        <button
-          onClick={handleReset}
-          className="w-full py-3 rounded-xl bg-primary-600 text-white
-                     text-sm font-semibold hover:bg-primary-700 transition-colors"
-        >
-          🔄 重新输入
-        </button>
-      </div>
-    )
-  }
-
-  // done：父组件正在关闭，不渲染
-  return null
+    </div>
+  )
 }
 
 // ─────────────────────────────────────────────────────────────
-// 子组件：拍小票 Tab（S10，精简复用）
+// 子组件：拍小票 Tab（S10）
+// 架构：统一根容器 flex flex-col flex-1 min-h-0，各状态内部弹性滚动
 // ─────────────────────────────────────────────────────────────
 interface OcrPanelProps {
   onFillForm: (amount: number, category: SystemCategory, date: string, notes: string) => void
@@ -723,12 +695,12 @@ interface OcrPanelProps {
 }
 
 function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
-  const [ocrState,    setOcrState]    = useState<OcrState>('idle')
-  const [previewUrl,  setPreviewUrl]  = useState<string | null>(null)
-  const [base64Data,  setBase64Data]  = useState('')
-  const [mimeType,    setMimeType]    = useState('image/jpeg')
-  const [ocrError,    setOcrError]    = useState('')
-  const [analyzingIdx,setAnalyzingIdx]= useState(0)
+  const [ocrState,     setOcrState]     = useState<OcrState>('idle')
+  const [previewUrl,   setPreviewUrl]   = useState<string | null>(null)
+  const [base64Data,   setBase64Data]   = useState('')
+  const [mimeType,     setMimeType]     = useState('image/jpeg')
+  const [ocrError,     setOcrError]     = useState('')
+  const [analyzingIdx, setAnalyzingIdx] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -767,103 +739,133 @@ function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
     }
   }
 
-  function handleReset() { setOcrState('idle'); setPreviewUrl(null); setBase64Data(''); setOcrError('') }
+  function handleReset() {
+    setOcrState('idle'); setPreviewUrl(null); setBase64Data(''); setOcrError('')
+  }
 
-  if (ocrState === 'idle') return (
-    <div className="px-5 pb-6">
-      <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
-        onChange={handleFileChange} className="hidden" />
-      <button onClick={() => fileInputRef.current?.click()}
-        className="w-full border-2 border-dashed border-primary-200 rounded-2xl
-                   bg-primary-50/40 hover:bg-primary-50 hover:border-primary-300
-                   transition-all py-10 flex flex-col items-center gap-3 group active:scale-[0.98]">
-        <div className="w-16 h-16 rounded-2xl bg-white shadow-card flex items-center justify-center text-3xl
-                        group-hover:shadow-card-md transition-all">📸</div>
-        <div className="text-center">
-          <p className="text-sm font-bold text-content-primary">拍照 / 选择小票图片</p>
-          <p className="text-xs text-content-tertiary mt-1">图片大小 ≤ 4MB · JPG / PNG / HEIC</p>
-        </div>
-      </button>
-      <div className="mt-3 px-3 py-2.5 bg-amber-50 rounded-xl border border-amber-100 flex items-start gap-2">
-        <span className="text-base flex-shrink-0 mt-0.5">⚡</span>
-        <p className="text-[11px] text-amber-600 leading-relaxed">
-          <span className="font-semibold text-amber-800">Gemini 2.5 Flash </span>
-          视觉识别 · 自动填写金额、分类、日期和备注
-        </p>
-      </div>
-    </div>
-  )
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
 
-  if (ocrState === 'preview') return (
-    <div className="px-5 pb-6 space-y-3">
-      <div className="relative rounded-2xl overflow-hidden bg-gray-100 shadow-card">
-        <img src={previewUrl!} alt="小票预览" className="w-full max-h-48 object-contain" />
-        <button onClick={handleReset}
-          className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/40 text-white text-xs
-                     flex items-center justify-center hover:bg-black/60 transition-colors">✕</button>
-      </div>
-      <button onClick={handleAnalyze}
-        className="w-full py-4 rounded-2xl text-sm font-bold text-white shadow-fab active:scale-[0.98]
-                   bg-gradient-to-r from-primary-600 to-primary-500 hover:from-primary-700 transition-all">
-        🤖 让 Gemini 识别这张小票
-      </button>
-      <p className="text-center text-[11px] text-content-tertiary">识别成功后将自动填写表单</p>
-    </div>
-  )
-
-  if (ocrState === 'analyzing') return (
-    <div className="px-5 pb-6">
-      <div className="relative rounded-2xl overflow-hidden bg-gray-100 shadow-card mb-4">
-        <img src={previewUrl!} alt="识别中" className="w-full max-h-48 object-contain opacity-60" />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-primary-400 to-transparent
-                          animate-[scanline_2s_ease-in-out_infinite] opacity-80" />
-        </div>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-14 h-14 rounded-2xl bg-white/90 shadow-card-md flex items-center justify-center text-2xl animate-pulse">🤖</div>
-        </div>
-      </div>
-      <div className="text-center space-y-2">
-        <p className="text-sm font-semibold text-content-primary">{ANALYZING_TEXTS[analyzingIdx]}</p>
-        <div className="flex justify-center gap-1.5 pt-1">
-          {ANALYZING_TEXTS.map((_, i) => (
-            <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${
-              i === analyzingIdx ? 'w-4 bg-primary-500' : 'w-1.5 bg-gray-200'}`} />
-          ))}
-        </div>
-        <p className="text-[11px] text-content-tertiary pt-1">通常 3-8 秒内完成</p>
-      </div>
-    </div>
-  )
-
-  if (ocrState === 'error') return (
-    <div className="px-5 pb-6 space-y-3">
-      <div className="text-center py-6">
-        <div className="text-4xl mb-3">😵</div>
-        <p className="text-sm font-semibold text-content-primary mb-1">AI 暂时打了个盹</p>
-        <p className="text-xs text-content-tertiary max-w-xs mx-auto">{ocrError || '识别失败，请重试'}</p>
-      </div>
-      <div className="flex gap-2">
-        {previewUrl && (
-          <button onClick={() => setOcrState('preview')}
-            className="flex-1 py-3 rounded-xl border-2 border-primary-200
-                       text-sm font-semibold text-primary-700 hover:bg-primary-50 transition-colors">
-            🔄 重新识别
+      {/* idle 态 */}
+      {ocrState === 'idle' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-2 pb-6">
+          <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
+            onChange={handleFileChange} className="hidden" />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full border-2 border-dashed border-primary-200 rounded-2xl
+                       bg-primary-50/40 hover:bg-primary-50 hover:border-primary-300
+                       transition-all py-10 flex flex-col items-center gap-3 group active:scale-[0.98]"
+          >
+            <div className="w-16 h-16 rounded-2xl bg-white shadow-card flex items-center justify-center text-3xl
+                            group-hover:shadow-card-md transition-all">📸</div>
+            <div className="text-center">
+              <p className="text-sm font-bold text-content-primary">拍照 / 选择小票图片</p>
+              <p className="text-xs text-content-tertiary mt-1">图片大小 ≤ 4MB · JPG / PNG / HEIC</p>
+            </div>
           </button>
-        )}
-        <button onClick={handleReset}
-          className="flex-1 py-3 rounded-xl bg-primary-600 text-white text-sm font-semibold hover:bg-primary-700 transition-colors">
-          📸 换图
-        </button>
-      </div>
+          <div className="mt-3 px-3 py-2.5 bg-amber-50 rounded-xl border border-amber-100 flex items-start gap-2">
+            <span className="text-base flex-shrink-0 mt-0.5">⚡</span>
+            <p className="text-[11px] text-amber-600 leading-relaxed">
+              <span className="font-semibold text-amber-800">Gemini 2.5 Flash </span>
+              视觉识别 · 自动填写金额、分类、日期和备注
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* preview 态 */}
+      {ocrState === 'preview' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-2 pb-6 space-y-3">
+          <div className="relative rounded-2xl overflow-hidden bg-gray-100 shadow-card">
+            <img src={previewUrl!} alt="小票预览" className="w-full max-h-48 object-contain" />
+            <button
+              onClick={handleReset}
+              className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/40 text-white text-xs
+                         flex items-center justify-center hover:bg-black/60 transition-colors"
+            >✕</button>
+          </div>
+          <button
+            onClick={handleAnalyze}
+            className="w-full py-4 rounded-2xl text-sm font-bold text-white shadow-fab active:scale-[0.98]
+                       bg-gradient-to-r from-primary-600 to-primary-500 hover:from-primary-700 transition-all"
+          >
+            🤖 让 Gemini 识别这张小票
+          </button>
+          <p className="text-center text-[11px] text-content-tertiary">识别成功后将自动填写表单</p>
+        </div>
+      )}
+
+      {/* analyzing 态 */}
+      {ocrState === 'analyzing' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-2 pb-6">
+          <div className="relative rounded-2xl overflow-hidden bg-gray-100 shadow-card mb-4">
+            <img src={previewUrl!} alt="识别中" className="w-full max-h-48 object-contain opacity-60" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-primary-400 to-transparent
+                              animate-[scanline_2s_ease-in-out_infinite] opacity-80" />
+            </div>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-14 h-14 rounded-2xl bg-white/90 shadow-card-md
+                              flex items-center justify-center text-2xl animate-pulse">🤖</div>
+            </div>
+          </div>
+          <div className="text-center space-y-2">
+            <p className="text-sm font-semibold text-content-primary">{ANALYZING_TEXTS[analyzingIdx]}</p>
+            <div className="flex justify-center gap-1.5 pt-1">
+              {ANALYZING_TEXTS.map((_, i) => (
+                <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${
+                  i === analyzingIdx ? 'w-4 bg-primary-500' : 'w-1.5 bg-gray-200'}`} />
+              ))}
+            </div>
+            <p className="text-[11px] text-content-tertiary pt-1">通常 3-8 秒内完成</p>
+          </div>
+        </div>
+      )}
+
+      {/* error 态 */}
+      {ocrState === 'error' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-2 pb-6 space-y-3">
+          <div className="text-center py-6">
+            <div className="text-4xl mb-3">😵</div>
+            <p className="text-sm font-semibold text-content-primary mb-1">AI 暂时打了个盹</p>
+            <p className="text-xs text-content-tertiary max-w-xs mx-auto">
+              {ocrError || '识别失败，请重试'}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            {previewUrl && (
+              <button
+                onClick={() => setOcrState('preview')}
+                className="flex-1 py-3 rounded-xl border-2 border-primary-200
+                           text-sm font-semibold text-primary-700 hover:bg-primary-50 transition-colors"
+              >
+                🔄 重新识别
+              </button>
+            )}
+            <button
+              onClick={handleReset}
+              className="flex-1 py-3 rounded-xl bg-primary-600 text-white
+                         text-sm font-semibold hover:bg-primary-700 transition-colors"
+            >
+              📸 换图
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* done 态：父组件已切回手写 Tab，此处无需渲染 */}
+
     </div>
   )
-
-  return null
 }
 
 // ─────────────────────────────────────────────────────────────
 // 主组件：OmniInputModal
+// 外层架构：
+//   fixed inset-x-0 bottom-0   — 移动端全宽底部
+//   sm:max-w-lg sm:mx-auto     — PC 端居中悬浮
+//   max-h-[90dvh] flex flex-col — 高度限制 + 三段式 Flex 根容器
 // ─────────────────────────────────────────────────────────────
 export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInputModalProps) {
 
@@ -957,181 +959,221 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
       {/* 遮罩 */}
       <div className="fixed inset-0 bg-black/30 z-40 backdrop-blur-[2px]" onClick={onClose} />
 
-      {/* 底部抽屉（移动端全宽底部滑入，PC 端居中悬浮） */}
-      <div className="fixed bottom-0 left-0 right-0 z-50
-                      sm:max-w-lg sm:mx-auto sm:inset-x-0 sm:bottom-4 sm:rounded-2xl
+      {/* ══════════════════════════════════════════════════════
+          底部抽屉 — 三段式 Flex 根容器
+          移动端：全宽底部滑入
+          PC 端  ：居中悬浮卡片（sm:max-w-lg sm:mx-auto sm:bottom-4）
+          高度   ：max-h-[90dvh]，dvh 自动处理浏览器工具栏遮挡
+          不设 overflow-y-auto — 滚动由各 Tab 内部区域独立管理
+      ══════════════════════════════════════════════════════ */}
+      <div className="fixed inset-x-0 bottom-0 z-50
+                      sm:max-w-lg sm:mx-auto sm:bottom-4 sm:rounded-2xl
                       bg-white rounded-t-2xl shadow-2xl
-                      max-h-[85vh] overflow-y-auto
+                      max-h-[90dvh] flex flex-col
                       animate-[slideUp_0.25s_ease-out]">
 
-        {/* 把手 */}
-        <div className="flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 bg-gray-200 rounded-full" />
-        </div>
+        {/* ══ ① Header：把手 + 标题行 + Tab 切换栏（固定不滚动）══ */}
+        <div className="flex-shrink-0">
 
-        {/* 标题行 */}
-        <div className="flex items-center justify-between px-5 pb-3">
-          <h2 className="text-base font-bold text-content-primary">记一笔</h2>
-          <button onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-full
-                       bg-surface-overlay text-content-tertiary hover:bg-gray-200">
-            ✕
-          </button>
-        </div>
+          {/* 把手 */}
+          <div className="flex justify-center pt-3 pb-1">
+            <div className="w-10 h-1 bg-gray-200 rounded-full" />
+          </div>
 
-        {/* ── 三 Tab 切换栏 ─────────────────────────────────── */}
-        <div className="flex gap-2 px-5 mb-4">
+          {/* 标题行 */}
+          <div className="flex items-center justify-between px-5 pb-3">
+            <h2 className="text-base font-bold text-content-primary">记一笔</h2>
+            <button
+              onClick={onClose}
+              className="w-7 h-7 flex items-center justify-center rounded-full
+                         bg-surface-overlay text-content-tertiary hover:bg-gray-200"
+            >
+              ✕
+            </button>
+          </div>
 
-          {/* ✍️ 手写录入 */}
-          <button onClick={() => setActiveTab('manual')}
-            className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-              activeTab === 'manual'
-                ? 'bg-primary-600 text-white shadow-sm'
-                : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
-            }`}>
-            ✍️ 手写
-          </button>
+          {/* 三 Tab 切换栏 */}
+          <div className="flex gap-2 px-5 pb-4">
 
-          {/* ✨ 智能识别（S11，语音 + 批量文本 + 审核舱） */}
-          <button onClick={() => setActiveTab('smart')}
-            className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-              activeTab === 'smart'
-                ? 'bg-primary-600 text-white shadow-sm'
-                : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
-            }`}>
-            ✨ 智能
-            <span className={`ml-1 text-[9px] font-bold align-middle ${
-              activeTab === 'smart' ? 'text-primary-200' : 'text-primary-400'
-            }`}>✦AI</span>
-          </button>
+            <button
+              onClick={() => setActiveTab('manual')}
+              className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                activeTab === 'manual'
+                  ? 'bg-primary-600 text-white shadow-sm'
+                  : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
+              }`}
+            >
+              ✍️ 手写
+            </button>
 
-          {/* 📸 拍小票（S10，Gemini Vision） */}
-          <button onClick={() => setActiveTab('ocr')}
-            className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-              activeTab === 'ocr'
-                ? 'bg-primary-600 text-white shadow-sm'
-                : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
-            }`}>
-            📸 拍照
-            <span className={`ml-1 text-[9px] font-bold align-middle ${
-              activeTab === 'ocr' ? 'text-primary-200' : 'text-primary-400'
-            }`}>✦AI</span>
-          </button>
+            <button
+              onClick={() => setActiveTab('smart')}
+              className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                activeTab === 'smart'
+                  ? 'bg-primary-600 text-white shadow-sm'
+                  : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
+              }`}
+            >
+              ✨ 智能
+              <span className={`ml-1 text-[9px] font-bold align-middle ${
+                activeTab === 'smart' ? 'text-primary-200' : 'text-primary-400'
+              }`}>✦AI</span>
+            </button>
 
-        </div>
-
-        {/* ══ 手写录入表单 ══════════════════════════════════ */}
-        {activeTab === 'manual' && (
-          <div className="px-5 pb-6 space-y-4">
-
-            {/* 收支类型 */}
-            <div className="flex gap-2 p-1 bg-surface-overlay rounded-xl">
-              {([['expense','💸 支出','text-rose-600'],['income','💰 收入','text-emerald-600']] as const)
-                .map(([type, label, cls]) => (
-                  <button key={type} onClick={() => setTxType(type)}
-                    className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-                      txType === type ? `bg-white ${cls} shadow-sm` : 'text-content-tertiary'}`}>
-                    {label}
-                  </button>
-                ))}
-            </div>
-
-            {/* 金额 */}
-            <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-content-tertiary">
-                {txType === 'income' ? '+¥' : '-¥'}
-              </span>
-              <input ref={amountRef} type="number" min="0" step="0.01" placeholder="0.00"
-                value={amountStr} onChange={e => { setAmountStr(e.target.value); setErrorMsg('') }}
-                className="w-full pl-14 pr-4 py-4 text-3xl font-bold tabular-nums bg-gray-50
-                           rounded-2xl border-2 border-transparent focus:border-primary-300
-                           focus:bg-white outline-none transition-all text-content-primary
-                           placeholder:text-gray-300" />
-            </div>
-
-            {/* 分类 */}
-            <div>
-              <p className="text-xs font-semibold text-content-secondary mb-2">分类</p>
-              <div className="flex flex-wrap gap-2">
-                {categories.map(cat => (
-                  <button key={cat} onClick={() => setCategory(cat)}
-                    className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium
-                                transition-all border ${
-                      category === cat
-                        ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
-                        : 'bg-surface-overlay text-content-secondary border-transparent hover:border-gray-200'}`}>
-                    <span>{CATEGORY_ICON[cat] ?? '📋'}</span>
-                    <span>{cat}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* 日期 */}
-            <div>
-              <p className="text-xs font-semibold text-content-secondary mb-2">日期</p>
-              <input type="date" value={date} onChange={e => setDate(e.target.value)}
-                className="w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm text-content-primary
-                           border-2 border-transparent focus:border-primary-300 focus:bg-white
-                           outline-none transition-all" />
-            </div>
-
-            {/* 备注 */}
-            <div>
-              <p className="text-xs font-semibold text-content-secondary mb-2">备注（选填）</p>
-              <input type="text" placeholder={`${category}消费`} value={note} maxLength={50}
-                onChange={e => setNote(e.target.value)}
-                className="w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm text-content-primary
-                           border-2 border-transparent focus:border-primary-300 focus:bg-white
-                           outline-none transition-all placeholder:text-gray-300" />
-            </div>
-
-            {/* 账套提示 */}
-            <div className="flex items-center gap-1.5 px-3 py-2 bg-primary-50 rounded-xl">
-              <span className="text-xs">🗂️</span>
-              <p className="text-xs text-primary-700">将记入账套：<span className="font-semibold ml-1">{activeLedgerId}</span></p>
-            </div>
-
-            {/* 错误 */}
-            {errorMsg && (
-              <div className="px-3 py-2 bg-red-50 rounded-xl border border-red-100">
-                <p className="text-xs text-red-600">⚠️ {errorMsg}</p>
-              </div>
-            )}
-
-            {/* 保存按钮 */}
-            <button onClick={handleSave}
-              disabled={submitState === 'saving' || submitState === 'success'}
-              className={`w-full py-4 rounded-2xl text-sm font-bold transition-all disabled:cursor-not-allowed ${
-                submitState === 'success' ? 'bg-emerald-500 text-white' :
-                submitState === 'error'   ? 'bg-red-500 text-white' :
-                'bg-primary-600 text-white hover:bg-primary-700 active:scale-[0.98] shadow-fab'}`}>
-              {submitState === 'saving'  ? '⏳ 正在写入云端…'        :
-               submitState === 'success' ? '✅ 已保存！看板正在更新…' :
-               submitState === 'error'   ? '❌ 保存失败，点击重试'    :
-               '💾 保存记账'}
+            <button
+              onClick={() => setActiveTab('ocr')}
+              className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                activeTab === 'ocr'
+                  ? 'bg-primary-600 text-white shadow-sm'
+                  : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
+              }`}
+            >
+              📸 拍照
+              <span className={`ml-1 text-[9px] font-bold align-middle ${
+                activeTab === 'ocr' ? 'text-primary-200' : 'text-primary-400'
+              }`}>✦AI</span>
             </button>
 
           </div>
-        )}
+        </div>
 
-        {/* ══ 智能识别 Tab（S11 核心）══════════════════════ */}
-        {activeTab === 'smart' && (
-          <SmartPanel
-            activeLedgerId={activeLedgerId}
-            onClose={onClose}
-            showToast={showToast}
-          />
-        )}
+        {/* ══ ② Body：弹性内容区，各 Tab 内部独立完成布局 ══ */}
+        <div className="flex-1 min-h-0 flex flex-col">
 
-        {/* ══ 拍小票 Tab（S10）══════════════════════════════ */}
-        {activeTab === 'ocr' && (
-          <OcrPanel
-            onFillForm={handleOcrFill}
-            showToast={showToast}
-          />
-        )}
+          {/* ✍️ 手写录入 Tab
+              内部也是三段式：表单字段(scroll) / 错误+保存按钮(fixed footer)
+          */}
+          {activeTab === 'manual' && (
+            <>
+              {/* 表单字段滚动区 */}
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-4 space-y-4">
 
+                {/* 收支类型 */}
+                <div className="flex gap-2 p-1 bg-surface-overlay rounded-xl">
+                  {([['expense','💸 支出','text-rose-600'],['income','💰 收入','text-emerald-600']] as const)
+                    .map(([type, label, cls]) => (
+                      <button key={type} onClick={() => setTxType(type)}
+                        className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                          txType === type ? `bg-white ${cls} shadow-sm` : 'text-content-tertiary'}`}>
+                        {label}
+                      </button>
+                    ))}
+                </div>
+
+                {/* 金额 */}
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-content-tertiary">
+                    {txType === 'income' ? '+¥' : '-¥'}
+                  </span>
+                  <input
+                    ref={amountRef}
+                    type="number" min="0" step="0.01" placeholder="0.00"
+                    value={amountStr}
+                    onChange={e => { setAmountStr(e.target.value); setErrorMsg('') }}
+                    className="w-full pl-14 pr-4 py-4 text-3xl font-bold tabular-nums bg-gray-50
+                               rounded-2xl border-2 border-transparent focus:border-primary-300
+                               focus:bg-white outline-none transition-all text-content-primary
+                               placeholder:text-gray-300"
+                  />
+                </div>
+
+                {/* 分类 */}
+                <div>
+                  <p className="text-xs font-semibold text-content-secondary mb-2">分类</p>
+                  <div className="flex flex-wrap gap-2">
+                    {categories.map(cat => (
+                      <button key={cat} onClick={() => setCategory(cat)}
+                        className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium
+                                    transition-all border ${
+                          category === cat
+                            ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
+                            : 'bg-surface-overlay text-content-secondary border-transparent hover:border-gray-200'}`}>
+                        <span>{CATEGORY_ICON[cat] ?? '📋'}</span>
+                        <span>{cat}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 日期 */}
+                <div>
+                  <p className="text-xs font-semibold text-content-secondary mb-2">日期</p>
+                  <input
+                    type="date" value={date}
+                    onChange={e => setDate(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm text-content-primary
+                               border-2 border-transparent focus:border-primary-300 focus:bg-white
+                               outline-none transition-all"
+                  />
+                </div>
+
+                {/* 备注 */}
+                <div>
+                  <p className="text-xs font-semibold text-content-secondary mb-2">备注（选填）</p>
+                  <input
+                    type="text" placeholder={`${category}消费`} value={note} maxLength={50}
+                    onChange={e => setNote(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm text-content-primary
+                               border-2 border-transparent focus:border-primary-300 focus:bg-white
+                               outline-none transition-all placeholder:text-gray-300"
+                  />
+                </div>
+
+                {/* 账套提示 */}
+                <div className="flex items-center gap-1.5 px-3 py-2 bg-primary-50 rounded-xl">
+                  <span className="text-xs">🗂️</span>
+                  <p className="text-xs text-primary-700">
+                    将记入账套：<span className="font-semibold ml-1">{activeLedgerId}</span>
+                  </p>
+                </div>
+
+              </div>
+
+              {/* 底部保存区（固定悬浮，永不被表单遮挡） */}
+              <div className="flex-shrink-0 px-5 pt-3 pb-6
+                              bg-white border-t border-gray-100/80
+                              shadow-[0_-4px_12px_rgba(0,0,0,0.04)]
+                              space-y-2">
+                {errorMsg && (
+                  <div className="px-3 py-2 bg-red-50 rounded-xl border border-red-100">
+                    <p className="text-xs text-red-600">⚠️ {errorMsg}</p>
+                  </div>
+                )}
+                <button
+                  onClick={handleSave}
+                  disabled={submitState === 'saving' || submitState === 'success'}
+                  className={`w-full py-4 rounded-2xl text-sm font-bold transition-all disabled:cursor-not-allowed ${
+                    submitState === 'success' ? 'bg-emerald-500 text-white' :
+                    submitState === 'error'   ? 'bg-red-500 text-white' :
+                    'bg-primary-600 text-white hover:bg-primary-700 active:scale-[0.98] shadow-fab'}`}
+                >
+                  {submitState === 'saving'  ? '⏳ 正在写入云端…'        :
+                   submitState === 'success' ? '✅ 已保存！看板正在更新…' :
+                   submitState === 'error'   ? '❌ 保存失败，点击重试'    :
+                   '💾 保存记账'}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* ✨ 智能识别 Tab（SmartPanel 自带 flex flex-col flex-1 min-h-0） */}
+          {activeTab === 'smart' && (
+            <SmartPanel
+              activeLedgerId={activeLedgerId}
+              onClose={onClose}
+              showToast={showToast}
+            />
+          )}
+
+          {/* 📸 拍小票 Tab（OcrPanel 自带 flex flex-col flex-1 min-h-0） */}
+          {activeTab === 'ocr' && (
+            <OcrPanel
+              onFillForm={handleOcrFill}
+              showToast={showToast}
+            />
+          )}
+
+        </div>
       </div>
     </>
   )
