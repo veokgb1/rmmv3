@@ -93,6 +93,21 @@
 
 ---
 
+## ✅ S6 — 数据可视化看板（封板）
+
+### S6 完成清单（V3-指令-04，2026-04-01）
+- [x] `npm install recharts`：轻量图表库引入
+- [x] `npm install -D @types/node`：修复 vite.config.ts 类型问题（顺带封板历史 Bug）
+- [x] `src/hooks/useBills.ts`：新增 `allLedgerBills`（全量账套账单，供图表使用）
+- [x] `src/components/statistics/MonthlyBarChart.tsx`：月度收支趋势图（Recharts BarChart，最近 6 月，emerald 收入 + rose 支出）
+- [x] `src/components/statistics/CategoryPieChart.tsx`：消费分类环形图（Donut Pie，自定义 Tooltip + Legend，10 色现代色盘）
+- [x] `src/pages/HomePage.tsx`：明细/统计双 Tab 切换，图表订阅 ledgerStore，切换账套即重绘
+- [x] 顺带修复 3 个历史 Bug：
+  - `correctionService.ts`：`assertLedgerScope` 从未被实际调用 → 已在 `applyRetroactiveCorrection` 内注入
+  - `User.types.ts`：`uid` 参数未使用 → 改为 `_uid`（约定：前缀 `_` 表示有意忽略）
+  - `vite.config.ts`：缺少 `@types/node` → 已补充安装
+- [x] TypeScript 零错误 + Vite build 2.80s（709 模块，含 recharts）
+
 ## ✅ 历史封板阶段
 - S4（战略升级）：三大支柱字段注入 + 治理文档全局对齐（2026-04-01）
 - S3：Firestore Schema + 类型体系（ledgerId 预留）

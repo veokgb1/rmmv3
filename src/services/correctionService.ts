@@ -163,8 +163,13 @@ export function applyRetroactiveCorrection(
   allTransactions:  Transaction[],
   scopeLedgerId:    string,
 ): CorrectionResult {
+  // 🔒 第一道安全锁：确保传入的全量数据中没有跨账套记录
+  // （fullTransactions 来自 billStore，理论上已隔离；此处作为运行时双重保险）
+  const scopedTransactions = allTransactions.filter(t => t.ledgerId === scopeLedgerId)
+  assertLedgerScope(scopedTransactions, scopeLedgerId)
+
   // 找到被修改的原始账单（需要其 description 作为相似度基准）
-  const sourceRecord = allTransactions.find(t => t.id === intent.transactionId)
+  const sourceRecord = scopedTransactions.find(t => t.id === intent.transactionId)
   if (!sourceRecord) {
     // 找不到原始记录，退化为单条修改
     return applySingleCorrection(intent)
@@ -172,7 +177,7 @@ export function applyRetroactiveCorrection(
 
   // 查找所有在作用域内、原值匹配、描述相似的历史记录
   const matched = findMatchingTransactions(
-    allTransactions,
+    scopedTransactions,
     scopeLedgerId,
     intent.field as keyof Transaction,
     intent.oldValue,

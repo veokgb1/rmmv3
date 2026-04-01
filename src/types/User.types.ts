@@ -42,7 +42,7 @@ export interface UserProfile {
  * S2（登录注册）完成后，在 signUp 流程中调用
  */
 export function createInitialProfile(
-  uid: string,
+  _uid: string,   // 调用方持有，写入 Firestore 时作为文档 ID 而非字段（故此处不使用）
   displayName: string,
   email: string,
 ): Omit<UserProfile, 'uid'> {

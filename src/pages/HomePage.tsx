@@ -1,11 +1,13 @@
-// 首页 — S7 第二波：全面接入 Zustand Store
-// 账套切换后，净收支大数字 + 账单列表自动级联刷新（物理联动）
-// 数据流：LedgerSwitcher → ledgerStore → useBills → 重渲染
+// 首页 — S6 升级：数据可视化看板 + 明细/统计双视图
+// 账套切换后，图表与账单列表同步重绘（物理级联动）
+// 数据流：LedgerSwitcher → ledgerStore → useBills → 图表/列表重渲染
 
 import { useState } from 'react'
 import ImportModal           from '@/components/import/ImportModal'
 import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
+import MonthlyBarChart       from '@/components/statistics/MonthlyBarChart'
+import CategoryPieChart      from '@/components/statistics/CategoryPieChart'
 
 // 业务 Hook（订阅 Zustand Store，替代所有 Mock 常量）
 import { useBills }  from '@/hooks/useBills'
@@ -144,8 +146,11 @@ interface CorrectionCtx {
 
 function HomePage() {
   // ── 数据层：订阅 Zustand Store，账套切换时自动重渲染 ─────
-  const { income, expense, net, thisMonthBills, totalCount } = useBills()
+  const { income, expense, net, thisMonthBills, allLedgerBills, totalCount } = useBills()
   const { activeLedger } = useLedger()
+
+  // ── 视图切换状态 ──────────────────────────────────────────
+  const [activeSection, setActiveSection] = useState<'detail' | 'stats'>('detail')
 
   // 取最近 8 条展示
   const recentBills = thisMonthBills.slice(0, 8)
@@ -248,106 +253,178 @@ function HomePage() {
         </button>
       </div>
 
-      {/* ══ 账单视图 Tab 栏 ══════════════════════════════════ */}
-      <div className="flex items-center gap-2 mb-4">
-        {/* 已结清 Tab — 当前激活 */}
-        <button className="flex-1 py-2 text-xs font-semibold rounded-xl
-                           bg-primary-600 text-white shadow-sm">
-          ✅ 已结清
-        </button>
-        {/* 预支出 Tab — 待开发占位 */}
+      {/* ══ 明细 / 统计 主 Tab 栏 ════════════════════════════ */}
+      <div className="flex items-center gap-1.5 mb-4 p-1
+                      bg-surface-overlay rounded-xl">
         <button
-          disabled
-          className="flex-1 py-2 text-xs font-medium rounded-xl
-                     bg-surface-overlay text-content-tertiary
-                     opacity-60 cursor-not-allowed relative"
-          title="预支出管理 · 开发中"
+          onClick={() => setActiveSection('detail')}
+          className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+            activeSection === 'detail'
+              ? 'bg-white text-content-primary shadow-sm'
+              : 'text-content-tertiary hover:text-content-secondary'
+          }`}
         >
-          <span>📅 预支出</span>
-          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5
-                           bg-amber-100 text-amber-600 text-[10px] font-bold
-                           rounded-full leading-none">
-            🚧 S9
-          </span>
+          📋 账单明细
+        </button>
+        <button
+          onClick={() => setActiveSection('stats')}
+          className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+            activeSection === 'stats'
+              ? 'bg-white text-content-primary shadow-sm'
+              : 'text-content-tertiary hover:text-content-secondary'
+          }`}
+        >
+          📊 统计看板
         </button>
       </div>
 
-      {/* ══ 纠偏演示入口条 ════════════════════════════════════ */}
-      <div className="flex items-center justify-between px-3.5 py-2.5 mb-4
-                      bg-amber-50 rounded-xl border border-amber-100">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-base flex-shrink-0">
-            🔄
-          </div>
-          <div>
-            <p className="text-xs font-semibold text-amber-800">补录纠偏 · 溯及既往</p>
-            <p className="text-[11px] text-amber-500 mt-0.5">S7 核心功能 · 支持三种修改策略</p>
-          </div>
-        </div>
-        <button
-          onClick={() => {
-            // 演示：用第一条账单填充上下文
-            const first = thisMonthBills[0]
-            if (first) {
-              setCorrectionCtx({
-                tx:       first,
-                field:    '分类',
-                oldValue: first.category,
-                newValue: first.category === '未分类' ? '餐饮' : '未分类',
-              })
-            }
-            setCorrectionOpen(true)
-          }}
-          className="text-xs font-bold text-amber-700 bg-amber-100 hover:bg-amber-200
-                     px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
-        >
-          演示弹窗 ›
-        </button>
-      </div>
-
-      {/* ══ 最近账单列表（来自 useBills，账套隔离保证） ══════ */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-sm font-semibold text-content-primary">最近账单</h2>
-          <button className="text-xs text-primary-600 font-medium">查看全部 ›</button>
-        </div>
-        <p className="text-xs text-content-tertiary mb-3">
-          {/* 账套切换时条数实时更新 */}
-          本月共 {totalCount} 笔记录 · 悬停可纠偏分类
-        </p>
-
-        <div>
-          {recentBills.length > 0 ? (
-            recentBills.map((tx, index) => (
-              <div key={tx.id}>
-                <BillItem transaction={tx} onCorrect={handleCorrect} />
-                {index < recentBills.length - 1 && (
-                  <div className="divider ml-14" />
-                )}
-              </div>
-            ))
-          ) : (
-            // 空状态：该账套本月无数据
-            <div className="py-10 text-center">
-              <p className="text-3xl mb-2">📋</p>
-              <p className="text-sm text-content-tertiary">
-                「{activeLedger?.name}」本月暂无账单
-              </p>
-              <p className="text-xs text-content-tertiary mt-1 opacity-70">
-                导入账单或手动记账后显示
-              </p>
+      {/* ══ 统计看板视图 ══════════════════════════════════════ */}
+      {activeSection === 'stats' && (
+        <div className="space-y-4">
+          {/* 月度收支趋势图 */}
+          <div className="card">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-content-primary">月度收支趋势</h2>
+              <span className="text-[11px] text-content-tertiary">最近 6 个月</span>
             </div>
-          )}
-        </div>
+            {/* 数据源：allLedgerBills 已按 activeLedgerId 隔离，切换账套即重绘 */}
+            <MonthlyBarChart bills={allLedgerBills} />
+          </div>
 
-        {totalCount > 8 && (
-          <button className="w-full mt-3 py-2.5 text-xs text-content-tertiary
-                             bg-surface-overlay rounded-lg text-center hover:bg-gray-100
-                             transition-colors">
-            还有 {totalCount - 8} 条记录，点击查看全部 ›
-          </button>
-        )}
-      </div>
+          {/* 消费分类占比图 */}
+          <div className="card">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-semibold text-content-primary">本月支出分类</h2>
+              <span className="text-[11px] text-content-tertiary">
+                {activeLedger?.name ?? '—'}
+              </span>
+            </div>
+            <p className="text-xs text-content-tertiary mb-3">
+              共 ¥{Math.round(expense).toLocaleString()} · 排除转账
+            </p>
+            {/* 数据源：thisMonthBills 已按 activeLedgerId + 本月 双过滤 */}
+            <CategoryPieChart bills={thisMonthBills} />
+          </div>
+
+          {/* 预支出面板占位 */}
+          <div className="card opacity-60">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-base flex-shrink-0">
+                📅
+              </div>
+              <div className="flex-1">
+                <p className="text-xs font-semibold text-content-primary">预支出管理</p>
+                <p className="text-[11px] text-content-tertiary mt-0.5">待发生账单、报销追踪</p>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5
+                               bg-amber-100 text-amber-600 rounded-full">
+                🚧 S9
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ 账单明细视图 ══════════════════════════════════════ */}
+      {activeSection === 'detail' && (
+        <>
+          {/* 已结清/预支出 子 Tab */}
+          <div className="flex items-center gap-2 mb-4">
+            <button className="flex-1 py-2 text-xs font-semibold rounded-xl
+                               bg-primary-600 text-white shadow-sm">
+              ✅ 已结清
+            </button>
+            <button
+              disabled
+              className="flex-1 py-2 text-xs font-medium rounded-xl
+                         bg-surface-overlay text-content-tertiary
+                         opacity-60 cursor-not-allowed"
+              title="预支出管理 · 开发中"
+            >
+              <span>📅 预支出</span>
+              <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5
+                               bg-amber-100 text-amber-600 text-[10px] font-bold
+                               rounded-full leading-none">
+                🚧 S9
+              </span>
+            </button>
+          </div>
+
+          {/* 纠偏演示入口条 */}
+          <div className="flex items-center justify-between px-3.5 py-2.5 mb-4
+                          bg-amber-50 rounded-xl border border-amber-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-base flex-shrink-0">
+                🔄
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-amber-800">补录纠偏 · 溯及既往</p>
+                <p className="text-[11px] text-amber-500 mt-0.5">S7 核心功能 · 支持三种修改策略</p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const first = thisMonthBills[0]
+                if (first) {
+                  setCorrectionCtx({
+                    tx:       first,
+                    field:    '分类',
+                    oldValue: first.category,
+                    newValue: first.category === '未分类' ? '餐饮' : '未分类',
+                  })
+                }
+                setCorrectionOpen(true)
+              }}
+              className="text-xs font-bold text-amber-700 bg-amber-100 hover:bg-amber-200
+                         px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
+            >
+              演示弹窗 ›
+            </button>
+          </div>
+
+          {/* 最近账单列表 */}
+          <div className="card">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-semibold text-content-primary">最近账单</h2>
+              <button className="text-xs text-primary-600 font-medium">查看全部 ›</button>
+            </div>
+            <p className="text-xs text-content-tertiary mb-3">
+              本月共 {totalCount} 笔记录 · 悬停可纠偏分类
+            </p>
+
+            <div>
+              {recentBills.length > 0 ? (
+                recentBills.map((tx, index) => (
+                  <div key={tx.id}>
+                    <BillItem transaction={tx} onCorrect={handleCorrect} />
+                    {index < recentBills.length - 1 && (
+                      <div className="divider ml-14" />
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="py-10 text-center">
+                  <p className="text-3xl mb-2">📋</p>
+                  <p className="text-sm text-content-tertiary">
+                    「{activeLedger?.name}」本月暂无账单
+                  </p>
+                  <p className="text-xs text-content-tertiary mt-1 opacity-70">
+                    导入账单或手动记账后显示
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {totalCount > 8 && (
+              <button className="w-full mt-3 py-2.5 text-xs text-content-tertiary
+                                 bg-surface-overlay rounded-lg text-center hover:bg-gray-100
+                                 transition-colors">
+                还有 {totalCount - 8} 条记录，点击查看全部 ›
+              </button>
+            )}
+          </div>
+        </>
+      )}
 
       {/* ══ 弹窗挂载区 ════════════════════════════════════════ */}
       <ImportModal

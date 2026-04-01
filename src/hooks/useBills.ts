@@ -16,6 +16,8 @@ const THIS_MONTH_PREFIX = `${now.getFullYear()}-${String(now.getMonth() + 1).pad
 export interface UseBillsReturn {
   /** 当前账套本月账单（日期倒序） */
   thisMonthBills: Transaction[]
+  /** 当前账套全量账单（跨月，供图表使用） */
+  allLedgerBills: Transaction[]
   /** 当前账套本月收入合计 */
   income:  number
   /** 当前账套本月支出合计（绝对值，已排除"转账"分类） */
@@ -44,16 +46,20 @@ export function useBills(): UseBillsReturn {
   const updateOne         = useBillStore(s => s.updateOne)
   const batchUpdate       = useBillStore(s => s.batchUpdate)
 
+  // ── 核心过滤：当前账套全量（供图表使用）──────────────────
+  const allLedgerBills = useMemo(() => (
+    allTransactions
+      .filter(t => t.ledgerId === activeLedgerId)  // 🔒 账套隔离
+      .sort((a, b) => a.date.localeCompare(b.date)) // 日期正序（图表需要）
+  ), [allTransactions, activeLedgerId])
+
   // ── 核心过滤：当前账套 + 本月 ──────────────────────────────
   // 🔒 ledgerId 过滤是向 UI 层的数据隔离防火墙
   const thisMonthBills = useMemo(() => (
-    allTransactions
-      .filter(t =>
-        t.ledgerId === activeLedgerId &&      // 🔒 账套隔离
-        t.date.startsWith(THIS_MONTH_PREFIX)  // 本月过滤
-      )
+    allLedgerBills
+      .filter(t => t.date.startsWith(THIS_MONTH_PREFIX))
       .sort((a, b) => b.date.localeCompare(a.date))  // 日期倒序
-  ), [allTransactions, activeLedgerId])
+  ), [allLedgerBills])
 
   // ── 收入统计 ───────────────────────────────────────────────
   const income = useMemo(() => (
@@ -96,6 +102,7 @@ export function useBills(): UseBillsReturn {
 
   return {
     thisMonthBills,
+    allLedgerBills,
     income,
     expense,
     net: income - expense,
