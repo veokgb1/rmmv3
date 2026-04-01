@@ -1,102 +1,95 @@
-// useBills — 账单数据业务 Hook
-// 自动订阅当前激活账套，返回过滤后的账单列表及衍生统计数据
+// useBills — 账单数据业务 Hook (S5 Firebase 实时版)
+// 订阅当前激活账套，返回过滤后账单、统计数据、纠偏入口
 // 核心安全保证：向 UI 层只暴露当前账套内的数据，永远不会越界
+//
+// S5 变更：
+//   - billsReady 状态透传给 UI 层（区分"加载中"与"空数据"）
+//   - correct() 在乐观更新本地 Store 后，异步写入 Firestore
+//     onSnapshot 回调确认后完成最终一致性（双写策略）
 
-import { useMemo } from 'react'
-import { useBillStore }   from '@/store/billStore'
-import { useLedgerStore } from '@/store/ledgerStore'
+import { useMemo }  from 'react'
+import { useBillStore }     from '@/store/billStore'
+import { useLedgerStore }   from '@/store/ledgerStore'
 import { handleCorrection } from '@/services/correctionService'
+import {
+  updateTransaction,
+  batchUpdateTransactions,
+}                           from '@/services/firebase/billService'
 import type { Transaction, CorrectionPolicy, CorrectionIntent } from '@/types/Transaction.types'
 
-// ── 当月前缀计算（运行时固定，不放在渲染循环中重复计算） ──────
+// ── 当月前缀计算 ───────────────────────────────────────────────
 const now = new Date()
 const THIS_MONTH_PREFIX = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 
 // ── Hook 返回值接口 ─────────────────────────────────────────────
 export interface UseBillsReturn {
-  /** 当前账套本月账单（日期倒序） */
   thisMonthBills: Transaction[]
-  /** 当前账套全量账单（跨月，供图表使用） */
   allLedgerBills: Transaction[]
-  /** 当前账套本月收入合计 */
-  income:  number
-  /** 当前账套本月支出合计（绝对值，已排除"转账"分类） */
-  expense: number
-  /** 本月净收支 = income - expense */
-  net:     number
-  /** 当前账套本月账单总条数 */
-  totalCount: number
-
-  /**
-   * correct — 执行纠偏操作（三种策略的统一入口）
-   *
-   * 安全保证：scopeLedgerId 由 Hook 内部从 Store 读取，
-   * 调用方（HomePage 等）无需传入，避免 UI 层传错账套 ID。
-   *
-   * @param policy  CorrectionPolicyModal 用户选择的策略
-   * @param intent  修改意图（字段、旧值、新值、目标账单 ID）
-   */
-  correct: (policy: CorrectionPolicy, intent: CorrectionIntent) => void
+  income:         number
+  expense:        number
+  net:            number
+  totalCount:     number
+  /** Firestore 首次快照是否已到达（false = 骨架屏，true = 真实数据） */
+  billsReady:     boolean
+  correct:        (policy: CorrectionPolicy, intent: CorrectionIntent) => void
 }
 
 export function useBills(): UseBillsReturn {
-  // 从 Store 订阅（Zustand 自动处理浅比较，只在依赖变化时重渲染）
-  const activeLedgerId    = useLedgerStore(s => s.activeLedgerId)
-  const allTransactions   = useBillStore(s => s._allTransactions)
-  const updateOne         = useBillStore(s => s.updateOne)
-  const batchUpdate       = useBillStore(s => s.batchUpdate)
+  const activeLedgerId  = useLedgerStore(s => s.activeLedgerId)
+  const allTransactions = useBillStore(s => s._allTransactions)
+  const billsReady      = useBillStore(s => s.billsReady)
+  const updateOne       = useBillStore(s => s.updateOne)
+  const batchUpdate     = useBillStore(s => s.batchUpdate)
 
-  // ── 核心过滤：当前账套全量（供图表使用）──────────────────
+  // ── S5 说明：billStore 已由 onSnapshot 按账套过滤写入 ─────────
+  // _allTransactions 已经是当前账套的数据（startBillsListener 查询时带了 WHERE ledgerId）
+  // 但保留此过滤作为防御性编程（防止监听竞态期间旧账套数据短暂残留）
   const allLedgerBills = useMemo(() => (
     allTransactions
-      .filter(t => t.ledgerId === activeLedgerId)  // 🔒 账套隔离
-      .sort((a, b) => a.date.localeCompare(b.date)) // 日期正序（图表需要）
+      .filter(t => t.ledgerId === activeLedgerId)
+      .sort((a, b) => a.date.localeCompare(b.date))
   ), [allTransactions, activeLedgerId])
 
-  // ── 核心过滤：当前账套 + 本月 ──────────────────────────────
-  // 🔒 ledgerId 过滤是向 UI 层的数据隔离防火墙
   const thisMonthBills = useMemo(() => (
     allLedgerBills
       .filter(t => t.date.startsWith(THIS_MONTH_PREFIX))
-      .sort((a, b) => b.date.localeCompare(a.date))  // 日期倒序
+      .sort((a, b) => b.date.localeCompare(a.date))
   ), [allLedgerBills])
 
-  // ── 收入统计 ───────────────────────────────────────────────
   const income = useMemo(() => (
-    thisMonthBills
-      .filter(t => t.amount > 0)
-      .reduce((sum, t) => sum + t.amount, 0)
+    thisMonthBills.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)
   ), [thisMonthBills])
 
-  // ── 支出统计（排除转账） ───────────────────────────────────
   const expense = useMemo(() => (
     thisMonthBills
       .filter(t => t.amount < 0 && t.category !== '转账')
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0)
+      .reduce((s, t) => s + Math.abs(t.amount), 0)
   ), [thisMonthBills])
 
-  // ── 纠偏操作（在账套作用域内执行）──────────────────────────
+  // ── 纠偏操作：乐观更新 + 异步 Firestore 写入 ─────────────────
   const correct = (policy: CorrectionPolicy, intent: CorrectionIntent) => {
-    // 调用纠偏引擎（传入当前账套 ID 作为安全边界）
-    const result = handleCorrection(
-      policy,
-      intent,
-      allTransactions,
-      activeLedgerId,  // 🔒 Hook 内部注入，UI 层无法篡改
-    )
+    const result = handleCorrection(policy, intent, allTransactions, activeLedgerId)
 
-    // 根据返回的 updatedIds 数量选择单条或批量写入
+    const patch = result.patch as Partial<Omit<Transaction, 'id' | 'ledgerId' | 'userId'>>
+
     if (result.updatedIds.length === 1) {
-      updateOne(result.updatedIds[0], result.patch as Partial<Omit<Transaction, 'id' | 'ledgerId' | 'userId'>>)
+      // 乐观更新本地 Store
+      updateOne(result.updatedIds[0], patch)
+      // 异步写入 Firestore（onSnapshot 随后确认，实现最终一致）
+      updateTransaction(result.updatedIds[0], patch).catch(err =>
+        console.error('[useBills·correct] Firestore 单条写入失败:', err)
+      )
     } else {
-      batchUpdate(result.updatedIds, result.patch as Partial<Omit<Transaction, 'id' | 'ledgerId' | 'userId'>>)
+      batchUpdate(result.updatedIds, patch)
+      batchUpdateTransactions(result.updatedIds, patch).catch(err =>
+        console.error('[useBills·correct] Firestore 批量写入失败:', err)
+      )
     }
 
-    // 开发调试：打印纠偏结果摘要
     console.info(
       `[useBills·correct] 策略=${policy} 账套=${activeLedgerId}`,
-      `更新 ${result.matchedCount} 条`,
-      result.rule ? `规则已创建: ${result.rule.id}` : ''
+      `本地更新 ${result.matchedCount} 条 → 同步到 Firestore`,
+      result.rule ? `规则已创建: ${result.rule.id}` : '',
     )
   }
 
@@ -107,6 +100,7 @@ export function useBills(): UseBillsReturn {
     expense,
     net: income - expense,
     totalCount: thisMonthBills.length,
+    billsReady,
     correct,
   }
 }

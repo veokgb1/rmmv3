@@ -1,9 +1,13 @@
-// 首页 — S5+S6：Firebase 云端同步 + 数据可视化看板
-// 账套切换后，图表与账单列表同步重绘（物理级联动）
-// 数据流：LedgerSwitcher → ledgerStore → useBills → 图表/列表重渲染
+// 首页 — S7 全面实时化：Firestore onSnapshot 驱动，骨架屏 Loading
+// 数据流：Firestore → onSnapshot → billStore/ledgerStore → useBills → UI
 
 import { useState } from 'react'
 import { pushInitialData, type SyncResult } from '@/services/dbSync'
+import {
+  StatCardsSkeleton,
+  ChartSkeleton,
+  BillListSkeleton,
+} from '@/components/ui/Skeleton'
 import ImportModal           from '@/components/import/ImportModal'
 import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
@@ -150,7 +154,11 @@ interface CorrectionCtx {
 
 function HomePage() {
   // ── 数据层：订阅 Zustand Store，账套切换时自动重渲染 ─────
-  const { income, expense, net, thisMonthBills, allLedgerBills, totalCount } = useBills()
+  const {
+    income, expense, net,
+    thisMonthBills, allLedgerBills, totalCount,
+    billsReady,
+  } = useBills()
   const { activeLedger } = useLedger()
 
   // ── 视图切换状态 ──────────────────────────────────────────
@@ -382,6 +390,19 @@ function HomePage() {
       {activeSection === 'stats' && (
         <div className="space-y-4">
 
+          {/* ─ 骨架屏：等待 Firestore 首次快照 ─ */}
+          {!billsReady && (
+            <>
+              <StatCardsSkeleton />
+              <ChartSkeleton height="h-5" />
+              <ChartSkeleton height="h-44" />
+              <ChartSkeleton height="h-36" />
+            </>
+          )}
+
+          {/* ─ 真实数据（billsReady 后渲染）─ */}
+          {billsReady && (<>
+
           {/* ① 核心数据卡片 — 三件套 KPI */}
           {/* 数据流：useBills → income/expense/net，账套切换时自动重传 */}
           <StatCards
@@ -459,6 +480,7 @@ function HomePage() {
             </div>
           </div>
 
+          </>)}  {/* end billsReady */}
         </div>
       )}
 
@@ -519,8 +541,11 @@ function HomePage() {
             </button>
           </div>
 
+          {/* 最近账单列表 — 骨架屏 */}
+          {!billsReady && <BillListSkeleton rows={5} />}
+
           {/* 最近账单列表 */}
-          <div className="card">
+          {billsReady && <div className="card">
             <div className="flex items-center justify-between mb-1">
               <h2 className="text-sm font-semibold text-content-primary">最近账单</h2>
               <button className="text-xs text-primary-600 font-medium">查看全部 ›</button>
@@ -559,7 +584,7 @@ function HomePage() {
                 还有 {totalCount - 8} 条记录，点击查看全部 ›
               </button>
             )}
-          </div>
+          </div>}
         </>
       )}
 

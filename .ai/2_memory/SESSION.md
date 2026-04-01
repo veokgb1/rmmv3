@@ -93,6 +93,31 @@
 
 ---
 
+## ✅ S7 — Firestore 实时联动全面落地（封板）
+
+### S7 实时化完成清单（V3-指令-07，2026-04-01）
+- [x] `src/store/ledgerStore.ts`：接入 `onSnapshot(collection('ledgers'))`，废弃 MOCK_LEDGERS
+  - 新增 `ledgersReady: boolean`（首次快照到达标志）
+  - `startLedgerListener()` 独立函数（避免 Function 类型污染 persist 序列化）
+- [x] `src/store/billStore.ts`：接入 `onSnapshot(query('transactions', where('ledgerId','==',id)))`
+  - 新增 `billsReady: boolean` / `_listeningLedgerId` 竞态防护
+  - `startBillsListener(ledgerId)` 独立函数，切换账套时自动重建监听
+  - _allTransactions 从 MOCK_TRANSACTIONS 改为 Firestore 实时推送
+- [x] `src/hooks/useFirestoreSync.ts`：全局监听生命周期管理 Hook
+  - App 挂载 → 启动 ledgers 监听；activeLedgerId 变化 → 切换 transactions 监听
+  - useRef 存储 unsubscribe，不触发重渲染
+- [x] `src/hooks/useLedger.ts`：新增 `ledgersReady` 透传
+- [x] `src/hooks/useBills.ts`：correct() 接入 Firestore 双写
+  - 乐观更新本地 Store → 异步调用 billService.updateTransaction()/batchUpdateTransactions()
+  - onSnapshot 确认最终一致性
+  - 新增 `billsReady` 透传给 UI 层
+- [x] `src/services/firebase/billService.ts`：updateTransaction / batchUpdateTransactions
+- [x] `src/components/ui/Skeleton.tsx`：骨架屏组件（Skeleton / StatCardsSkeleton / ChartSkeleton / BillListSkeleton）
+- [x] `src/App.tsx`：挂载 `useFirestoreSync()`（全局唯一实例）
+- [x] `src/pages/HomePage.tsx`：billsReady 驱动骨架屏 ↔ 真实数据切换
+
+**实时效果**：在 Firebase Console 手动修改任意账单金额 → 前端看板约 1-2 秒内自动跳动更新（无需刷新页面）
+
 ## ✅ S5 — Firebase 云端接入（初始同步封板）
 
 ### S5 完成清单（V3-指令-05，2026-04-01）
