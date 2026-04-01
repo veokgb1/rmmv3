@@ -161,6 +161,35 @@ export interface Transaction {
   parseError?:  string    // 解析错误描述（有值=某字段解析失败）
   isDuplicate?: boolean   // 疑似重复标记（人工确认后清除）
   isVerified?:  boolean   // 人工核实完成标记
+
+  // ── § 3.9 跨账套数据血缘（Data Pedigree） ────────────────
+  /**
+   * clonedFromId — 该记录克隆自哪条原始记录的 ID
+   *
+   * 使用场景：将账套 A 的一条账单"克隆"到账套 B 时，
+   *   账套 B 中的新记录携带此字段，指向账套 A 中原记录的 Firestore 文档 ID。
+   *
+   * 查询用法：可通过 clonedFromId 反查所有"派生自同一原始记录"的副本，
+   *   用于跨账套对账、凭证一致性验证。
+   *
+   * SX 阶段实现完整血缘追溯 UI。
+   */
+  clonedFromId?: string
+
+  /**
+   * sourceLedgerId — 该记录克隆自哪个账套
+   *
+   * 与 clonedFromId 成对使用：
+   *   clonedFromId  = 原始记录的 Firestore 文档 ID（定位到具体记录）
+   *   sourceLedgerId = 原始记录所在的账套 ID（定位到来源空间）
+   *
+   * 之所以单独存储 sourceLedgerId（而非运行时从 clonedFromId 反查），
+   *   是因为 Firestore 安全规则会限制跨账套读取，
+   *   冗余存储可在仅有本账套权限时也能展示来源标签。
+   *
+   * 示例：{ clonedFromId: 'txn-abc123', sourceLedgerId: 'mingpao-ca' }
+   */
+  sourceLedgerId?: string
 }
 
 // ════════════════════════════════════════════════════════════

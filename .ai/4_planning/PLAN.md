@@ -154,3 +154,24 @@ ledgers/mingpao-to      → Ming Pao Toronto
 - [ ] 紧凑/标准/宽松三档
 
 ### SX.4 Lightbox 图片弹窗
+
+### SX.5 跨账套数据同步与血缘追溯（Data Pedigree）
+
+> **战略背景**：同一笔交易可能需要同时记录在多个账套中
+> （如一笔差旅费既属于"个人账本"，也属于"Ming Pao Canada 报销账套"），
+> 系统需支持"克隆并追溯"，而非简单复制后失去关联。
+
+#### 底层预留（已完成 ✅）
+- `Transaction.clonedFromId?: string`  — 指向原始记录的 Firestore 文档 ID
+- `Transaction.sourceLedgerId?: string` — 指向来源账套 ID
+- 冗余存储 sourceLedgerId 的原因：Firestore 安全规则限制跨账套读取，
+  本账套权限内也能展示来源标签，无需跨权限查询
+
+#### SX 阶段实现（待开发）
+- [ ] **一键克隆操作**：账单详情页"克隆到其他账套"按钮
+  - 选择目标账套 → 生成新记录（自动注入 `clonedFromId` + `sourceLedgerId`）
+  - 支持附件关联（Firebase Storage 文件 URL 共用，不重复上传）
+- [ ] **血缘标记 UI**：账单列表中克隆记录右上角显示「↗ 来源: 个人账本」徽章
+- [ ] **血缘查询 API**：`billService.findClones(transactionId)` — 查找所有派生副本
+- [ ] **跨账套对账视图**：按 `clonedFromId` 聚合，对比原始记录与各克隆版本的差异
+- [ ] **断链检测**：若原始记录被删除，派生记录的 `clonedFromId` 标记为"孤儿"状态
