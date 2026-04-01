@@ -2,6 +2,68 @@
 
 ---
 
+## ✅ S13 — 弹窗布局全局架构重构（三段式 Flex，封板）
+
+### S13 完成清单（V3-指令-13，2026-04-02）
+
+- [x] `src/components/input/OmniInputModal.tsx`：彻底抛弃 `overflow-y-auto` 补丁，重构为三段式 Flex 架构
+  - **根容器**：`max-h-[90dvh] flex flex-col`（dvh 适配移动浏览器工具栏）
+  - **① Header（flex-shrink-0）**：把手 + 标题行 + Tab 切换栏，物理固定，不参与滚动
+  - **② Body（flex-1 min-h-0 flex flex-col）**：弹性内容区，各 Tab 内部独立管理滚动
+  - **③ Footer（flex-shrink-0）**：操作按钮区，永远悬浮贴底，不被任何内容遮挡
+  - 手写 Tab：表单字段 `flex-1 min-h-0 overflow-y-auto` / 保存按钮 `flex-shrink-0` + 阴影分隔
+  - 智能 Tab（SmartPanel）：统一根容器 `flex flex-col flex-1 min-h-0`
+    - Review 态内部再次三段式：标题 `flex-shrink-0` / 卡片列表 `flex-1 min-h-0 overflow-y-auto` / 双按钮 `flex-shrink-0`
+    - 其他态（input/parsing/error）：单一 `flex-1 min-h-0 overflow-y-auto` 弹性滚动区
+  - 拍照 Tab（OcrPanel）：统一根容器 `flex flex-col flex-1 min-h-0`，每状态内部均 `flex-1 overflow-y-auto`
+  - 移除所有硬编码补丁（`pb-32`、`max-h-[45vh]` 写死高度）
+  - 恢复并保证 `🚫 重来` 按钮始终在 `flex-shrink-0` footer 内，物理不可遮挡
+  - PC 端：`sm:max-w-lg sm:mx-auto sm:bottom-4 sm:rounded-2xl` 居中悬浮卡片
+- [x] TypeScript 零错误（tsc --noEmit 无输出）
+
+**三端走查**：手机竖屏内部滚动 ✓ / 手机横屏受限高度可滚 ✓ / PC 居中悬浮 ✓ / iPhone 安全区兼容 ✓
+
+---
+
+## ✅ S12 — UX 三项精修（语音引擎重构 + 响应式 + 卡片遮挡修复，封板）
+
+### S12 完成清单（V3-指令-12，2026-04-02）
+
+- [x] `src/components/input/OmniInputModal.tsx`：
+  - **语音引擎重构**：`continuous = true`（持续录音，不自动打断）；`toggleVoice()` 显式开关（点击开始/再点停止）；`voiceSeconds` 60 秒倒计时 state；`useEffect` 驱动 `setInterval`，`isListening` 变化时启停并重置；归零自动 `recognition.stop()`；按钮内实时显示剩余秒数，`< 10s` 文字变亮黄色警告；旁边提示 `< 10s` 时切换为 `⚠️ 即将自动停止`（红色加粗）
+  - **响应式**：弹窗外层 `max-h-[92vh]` → `max-h-[85vh]`，新增 `sm:max-w-lg sm:mx-auto sm:inset-x-0 sm:bottom-4 sm:rounded-2xl`
+  - **底部遮挡（临时补丁）**：卡片列表容器追加 `pb-32`（后被 S13 彻底重构替代）
+
+---
+
+## ✅ S11 — 智能识别舱（语音 + 批量文本 + 审核舱 + writeBatch，封板）
+
+### S11 完成清单（V3-指令-11-终极版，2026-04-02）
+
+- [x] `src/services/aiService.ts`：
+  - 新增 `parseNaturalLanguageBatch(text)`：返回 `Promise<ReceiptAnalysisResult[]>`
+  - `buildBatchPrompt(text)`：多条记录批量提取 Prompt（含 JSON 数组示例、中文数字转换规则）
+  - 每条逐项校验（金额无效静默跳过），JSON 解析失败优雅降级返回 `[]`
+  - 单对象响应自动包裹为数组
+- [x] `src/components/input/OmniInputModal.tsx`：✨ 智能识别 Tab 全面落地
+  - **DraftItem** 类型：`{ _id, amount, category, date, notes }`（本地临时 ID 用于 React key）
+  - **DraftCard** 子组件：内联可编辑卡片（number/select/date/text 四字段 + 🗑️ 移除按钮）
+  - **SmartPanel** 子组件：6 态状态机（input → parsing → review → saving → done / error）
+    - input 态：大 textarea + 语音辅助追加 + 示例提示卡 + 「智能提取账单」按钮
+    - parsing 态：Gemini 解析中居中 Loading 动画
+    - review 态：审核舱 — 绿色标题栏 + 可滚动 DraftCard 列表 + `🚫 重来 / 💾 确认入账` 双按钮
+    - saving 态：按钮转为旋转圈 + "写入云端…"
+    - done 态：关闭弹窗（onSnapshot 驱动 UI 重绘）
+    - error 态：错误信息 + 重新输入
+  - **writeBatch** 批量写入：一次 commit 写入多条 Transaction，无手动 Store 操作
+  - Web Speech API：`continuous = false` → S12 升级为 `true`
+- [x] TypeScript 零错误：自定义 ISpeechRecognition 接口 + ISpeechRecognitionCtor 解决 TS 未内置 Speech API 类型问题
+- [x] `src/components/ledger/LedgerSwitcher.tsx`：紧急 Bug 修复
+  - 增加 `if (!ledgersReady || !activeLedger)` 早返回骨架屏
+  - 彻底修复 Firestore 异步加载时 `Cannot read properties of undefined (reading 'name')` 崩溃
+
+---
+
 ## ✅ S10 — AI 视觉引擎接入（Gemini 拍小票，封板）
 
 ### S10 完成清单（V3-指令-10，2026-04-01）
