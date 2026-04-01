@@ -1,10 +1,10 @@
 // 账套切换器组件
 // 显示当前激活账套，点击展开下拉菜单切换账套
-// S7 阶段：当前使用 Mock 数据 + 父组件 React State，S5 接入后改用 ledgerStore
+// S7 阶段：已接入 ledgerStore（Zustand），不再依赖父组件 Props 传递状态
 
 import { useState, useEffect, useRef } from 'react'
 import type { Ledger } from '@/types/Ledger.types'
-import { MOCK_LEDGERS } from '@/mock/ledgers.mock'
+import { useLedger } from '@/hooks/useLedger'
 
 // ── 账套类型的视觉元数据 ──────────────────────────────────────
 const LEDGER_TYPE_META: Record<string, { icon: string; label: string; iconBg: string; iconText: string }> = {
@@ -22,9 +22,10 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 }
 
 // ── 组件 Props ────────────────────────────────────────────────
+// S7 升级：组件直接读取 ledgerStore，无需父组件传入 Props
+// 保留可选的 onAfterChange 回调，供父组件（如首页）做额外副作用（如埋点）
 interface LedgerSwitcherProps {
-  activeLedgerId: string
-  onLedgerChange: (ledgerId: string) => void
+  onAfterChange?: (ledgerId: string) => void
 }
 
 // ── Toast 组件（内联，仅此组件使用）─────────────────────────
@@ -55,19 +56,22 @@ function InlineToast({ message, visible }: ToastProps) {
 }
 
 // ── 主组件 ─────────────────────────────────────────────────────
-function LedgerSwitcher({ activeLedgerId, onLedgerChange }: LedgerSwitcherProps) {
+function LedgerSwitcher({ onAfterChange }: LedgerSwitcherProps) {
+  // 直接从 Zustand Store 读取状态，无需 Props 传递
+  const { activeLedgerId, activeLedger: activeLedgerData, ledgers, switchLedger } = useLedger()
+
   // 下拉菜单开关状态
-  const [isOpen, setIsOpen]         = useState(false)
+  const [isOpen, setIsOpen]             = useState(false)
   // Toast 消息内容（null = 不显示）
-  const [toastMsg, setToastMsg]     = useState<string | null>(null)
+  const [toastMsg, setToastMsg]         = useState<string | null>(null)
   // Toast 可见性（用于 CSS transition）
   const [toastVisible, setToastVisible] = useState(false)
 
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // 当前激活账套数据
-  const activeLedger = MOCK_LEDGERS.find(l => l.id === activeLedgerId) ?? MOCK_LEDGERS[0]
-  const activeMeta   = LEDGER_TYPE_META[activeLedger.type] ?? LEDGER_TYPE_META.personal
+  // 当前激活账套数据（Store 已保证存在，fallback 防止极端初始化竞态）
+  const activeLedger = activeLedgerData ?? ledgers[0]
+  const activeMeta   = LEDGER_TYPE_META[activeLedger?.type ?? 'personal'] ?? LEDGER_TYPE_META.personal
 
   // ── 点击页面其他区域时关闭下拉 ─────────────────────────────
   useEffect(() => {
@@ -100,7 +104,9 @@ function LedgerSwitcher({ activeLedgerId, onLedgerChange }: LedgerSwitcherProps)
   function handleSelect(ledger: Ledger) {
     setIsOpen(false)
     if (ledger.id === activeLedgerId) return
-    onLedgerChange(ledger.id)
+    // 写入 Zustand Store → 所有订阅了 useLedger/useBills 的组件自动重渲染
+    switchLedger(ledger.id)
+    onAfterChange?.(ledger.id)
     // 重置后再赋值，使同账套重复切换也能重新触发 Toast
     setToastMsg(null)
     setToastVisible(false)
@@ -170,9 +176,9 @@ function LedgerSwitcher({ activeLedgerId, onLedgerChange }: LedgerSwitcherProps)
               </p>
             </div>
 
-            {/* 账套选项列表 */}
+            {/* 账套选项列表（来自 Zustand Store，S5 后自动同步 Firestore） */}
             <div className="py-1.5">
-              {MOCK_LEDGERS.map(ledger => {
+              {ledgers.map(ledger => {
                 const meta     = LEDGER_TYPE_META[ledger.type] ?? LEDGER_TYPE_META.personal
                 const isActive = ledger.id === activeLedgerId
                 const symbol   = CURRENCY_SYMBOL[ledger.currency] ?? ledger.currency

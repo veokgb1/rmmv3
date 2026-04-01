@@ -49,9 +49,20 @@
 - [x] `src/pages/HomePage.tsx`：集成 LedgerSwitcher（顶部导航）+ CorrectionPolicyModal（演示入口条 + 账单行 hover 触发）
 - [x] TypeScript 零错误，Vite build 1.09s，51 模块通过
 
+### S7 第二波完成清单（逻辑层）
+- [x] `npm install zustand`：引入全局状态管理
+- [x] `src/mock/transactions.mock.ts`：补齐全部 Transaction 必填字段（ledgerId/tags/accountId/sourceType/createdAt/updatedAt），三账套各分配真实数据
+- [x] `src/store/ledgerStore.ts`：账套状态机（persist 持久化 activeLedgerId 至 localStorage）
+- [x] `src/store/billStore.ts`：账单状态层（全量存储 + updateOne/batchUpdate/appendTransactions）
+- [x] `src/services/correctionService.ts`：纠偏引擎（三策略路由 + 账套安全红线 assertLedgerScope + 数据血缘兼容注释）
+- [x] `src/hooks/useLedger.ts`：账套业务 Hook（封装 ledgerStore）
+- [x] `src/hooks/useBills.ts`：账单业务 Hook（自动按 activeLedgerId 过滤 + 统计计算 + correct 入口）
+- [x] `src/components/ledger/LedgerSwitcher.tsx`：改为直接读写 ledgerStore，移除 Props 依赖
+- [x] `src/pages/HomePage.tsx`：全面接入 useBills/useLedger，账套切换 → 数据物理联动
+- [x] TypeScript 零错误，Vite build 1.16s，60 模块
+
 ### S7 待完成（后续波次）
-- [ ] `src/5_store/ledgerStore.ts`：Zustand 账套全局状态（S5 接入后替换 React State）
-- [ ] `src/services/correctionService.ts`：纠偏策略执行逻辑（once / rule_forward / retroactive）
+- [ ] `src/services/firebase/correctionService.ts`：S5 接入后写入 Firestore（替换 Mock 打印）
 - [ ] Firestore Security Rules：多账套 RBAC 权限规则
 - [ ] `LedgerSettingsPage.tsx`：账套管理页面（目前"管理账套"按钮已预留入口）
 
