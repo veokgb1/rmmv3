@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npx vite:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(python -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\(d[''''version'''']\\)\")",
+      "Bash(node -e \"const p=require\\(''@google/generative-ai/package.json''\\);console.log\\(p.version\\)\")"
     ]
   }
 }

@@ -14,6 +14,7 @@ import { handleCorrection } from '@/services/correctionService'
 import {
   updateTransaction,
   batchUpdateTransactions,
+  deleteTransaction,
 }                           from '@/services/firebase/billService'
 import type { Transaction, CorrectionPolicy, CorrectionIntent } from '@/types/Transaction.types'
 
@@ -31,7 +32,16 @@ export interface UseBillsReturn {
   totalCount:     number
   /** Firestore 首次快照是否已到达（false = 骨架屏，true = 真实数据） */
   billsReady:     boolean
-  correct:        (policy: CorrectionPolicy, intent: CorrectionIntent) => void
+  /**
+   * 纠偏：乐观更新本地 Store + 异步写入 Firestore
+   * @returns matchedCount — 实际受影响的账单条数（溯及既往时 > 1）
+   */
+  correct:        (policy: CorrectionPolicy, intent: CorrectionIntent) => Promise<number>
+  /**
+   * 删除单条账单：仅调用 Firestore deleteDoc，绝不手动改 Store
+   * onSnapshot 收到变更后账单自动从列表消失
+   */
+  deleteOne:      (id: string) => Promise<void>
 }
 
 export function useBills(): UseBillsReturn {
@@ -66,31 +76,41 @@ export function useBills(): UseBillsReturn {
       .reduce((s, t) => s + Math.abs(t.amount), 0)
   ), [thisMonthBills])
 
-  // ── 纠偏操作：乐观更新 + 异步 Firestore 写入 ─────────────────
-  const correct = (policy: CorrectionPolicy, intent: CorrectionIntent) => {
+  // ── 纠偏操作：乐观更新 + await Firestore 写入 ──────────────────
+  // 返回 matchedCount 供上层（HomePage）展示 Toast 计数
+  const correct = async (
+    policy: CorrectionPolicy,
+    intent: CorrectionIntent,
+  ): Promise<number> => {
     const result = handleCorrection(policy, intent, allTransactions, activeLedgerId)
-
-    const patch = result.patch as Partial<Omit<Transaction, 'id' | 'ledgerId' | 'userId'>>
+    const patch  = result.patch as Partial<Omit<Transaction, 'id' | 'ledgerId' | 'userId'>>
 
     if (result.updatedIds.length === 1) {
-      // 乐观更新本地 Store
+      // 乐观更新本地 Store（立即刷新 UI）
       updateOne(result.updatedIds[0], patch)
-      // 异步写入 Firestore（onSnapshot 随后确认，实现最终一致）
-      updateTransaction(result.updatedIds[0], patch).catch(err =>
-        console.error('[useBills·correct] Firestore 单条写入失败:', err)
-      )
+      // 等待 Firestore 写入（调用方依此驱动 Loading 态）
+      await updateTransaction(result.updatedIds[0], patch)
     } else {
+      // 批量：乐观先更本地，再 await writeBatch
       batchUpdate(result.updatedIds, patch)
-      batchUpdateTransactions(result.updatedIds, patch).catch(err =>
-        console.error('[useBills·correct] Firestore 批量写入失败:', err)
-      )
+      await batchUpdateTransactions(result.updatedIds, patch)
     }
 
     console.info(
       `[useBills·correct] 策略=${policy} 账套=${activeLedgerId}`,
-      `本地更新 ${result.matchedCount} 条 → 同步到 Firestore`,
+      `已同步 ${result.matchedCount} 条到 Firestore`,
       result.rule ? `规则已创建: ${result.rule.id}` : '',
     )
+
+    // onSnapshot 会随后确认最终一致，无需手动 re-pull
+    return result.matchedCount
+  }
+
+  // ── 删除单条账单：仅调用 Firestore，不触碰本地 Store ────────────
+  // 删除完成后 onSnapshot 会从 _allTransactions 中移除该条 → UI 自动消失
+  const deleteOne = async (id: string): Promise<void> => {
+    await deleteTransaction(id)
+    console.info(`[useBills·deleteOne] 账套=${activeLedgerId} 账单=${id} 已删除`)
   }
 
   return {
@@ -102,5 +122,6 @@ export function useBills(): UseBillsReturn {
     totalCount: thisMonthBills.length,
     billsReady,
     correct,
+    deleteOne,
   }
 }

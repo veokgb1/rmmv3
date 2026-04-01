@@ -135,3 +135,36 @@ interface Transaction {
 | `商品说明` | `description` | 优先使用此字段 |
 | `交易对方` | `description` | 商品说明为空时使用 |
 | （全行） | `rawData` | 完整保留原始对象 |
+
+---
+
+## R9 — AI 模型版本治理（Model Versioning）
+
+> 详细规范见 `docs/04_AI_GOVERNANCE.md`，本节为快速索引摘要。
+
+### 基准线（Baseline）
+
+```
+最低可用版本底线：gemini-2.5-flash
+调用入口（唯一）：src/services/aiService.ts → analyzeReceipt()
+```
+
+### 降级熔断（严格红线 🚨）
+
+- **严禁**将模型回退至 `gemini-1.0-*` 或 `gemini-1.5-*` 系列
+  - `1.x` 系列 API 端点逐步停用，调用将返回 404 并导致能力断崖
+- **严禁**在 `aiService.ts` 之外硬编码任何模型名称字符串
+- **严禁**将 `VITE_GEMINI_API_KEY` 提交至 Git（会被 Google 自动吊销）
+
+### 演进路线（Future-proof ✅）
+
+```
+gemini-2.5-flash  →  gemini-3.x-flash  →  更高版本（随官方 API 迭代平滑升级）
+```
+
+升级时只需修改 `aiService.ts` 第 36 行的 `model` 字段，并在本文档更新版本记录。
+
+### 合法分类约束（R9 ↔ R4 联动）
+
+`aiService.ts` 的 Prompt 强制要求 Gemini 从 **R4 分类体系**中选值，
+任何对 R4 一级分类的修改**必须同步更新** `aiService.ts` 中的 Prompt 合法值列表。

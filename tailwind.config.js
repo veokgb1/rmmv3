@@ -115,9 +115,16 @@ export default {
           '0%':   { transform: 'translateY(100%)', opacity: '0' },
           '100%': { transform: 'translateY(0)',    opacity: '1' },
         },
+        // AI 小票扫描线动画：从上到下扫描
+        scanline: {
+          '0%':   { transform: 'translateY(-100%)' },
+          '50%':  { transform: 'translateY(1000%)'  },
+          '100%': { transform: 'translateY(-100%)' },
+        },
       },
       animation: {
-        slideUp: 'slideUp 0.25s ease-out',
+        slideUp:  'slideUp 0.25s ease-out',
+        scanline: 'scanline 2s ease-in-out infinite',
       },
     },
   },

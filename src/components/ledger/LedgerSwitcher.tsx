@@ -58,7 +58,13 @@ function InlineToast({ message, visible }: ToastProps) {
 // ── 主组件 ─────────────────────────────────────────────────────
 function LedgerSwitcher({ onAfterChange }: LedgerSwitcherProps) {
   // 直接从 Zustand Store 读取状态，无需 Props 传递
-  const { activeLedgerId, activeLedger: activeLedgerData, ledgers, switchLedger } = useLedger()
+  const {
+    activeLedgerId,
+    activeLedger: activeLedgerData,
+    ledgers,
+    ledgersReady,
+    switchLedger,
+  } = useLedger()
 
   // 下拉菜单开关状态
   const [isOpen, setIsOpen]             = useState(false)
@@ -69,7 +75,7 @@ function LedgerSwitcher({ onAfterChange }: LedgerSwitcherProps) {
 
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // 当前激活账套数据（Store 已保证存在，fallback 防止极端初始化竞态）
+  // 当前激活账套数据（优先用精确匹配，fallback 到列表第一条）
   const activeLedger = activeLedgerData ?? ledgers[0]
   const activeMeta   = LEDGER_TYPE_META[activeLedger?.type ?? 'personal'] ?? LEDGER_TYPE_META.personal
 
@@ -111,6 +117,24 @@ function LedgerSwitcher({ onAfterChange }: LedgerSwitcherProps) {
     setToastMsg(null)
     setToastVisible(false)
     requestAnimationFrame(() => setToastMsg(`已切换至「${ledger.name}」`))
+  }
+
+  // ── 安全门：Firestore 首次快照未到 / 账套列表为空时渲染骨架屏 ──
+  // ledgersReady=false 意味着 onSnapshot 还没有推送数据，此时 activeLedger
+  // 必然是 undefined（Store 初始化为 []），强行读 .name 会导致白屏崩溃。
+  // 渲染一个 shimmer 占位，用户几乎感知不到闪烁（通常 < 500ms）。
+  if (!ledgersReady || !activeLedger) {
+    return (
+      <div className="flex items-center gap-2.5 animate-pulse" aria-busy="true" aria-label="账套加载中">
+        {/* 图标占位 */}
+        <div className="w-9 h-9 rounded-xl bg-gray-200 flex-shrink-0" />
+        {/* 文字占位 */}
+        <div className="space-y-1.5">
+          <div className="h-3.5 w-28 bg-gray-200 rounded-full" />
+          <div className="h-2.5 w-20 bg-gray-100 rounded-full" />
+        </div>
+      </div>
+    )
   }
 
   return (

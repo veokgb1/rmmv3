@@ -5,6 +5,7 @@
 import {
   doc, addDoc,
   updateDoc,
+  deleteDoc,
   writeBatch,
   collection,
   serverTimestamp,
@@ -33,6 +34,19 @@ export async function addTransaction(
   })
   console.debug('[billService] 新账单已写入 Firestore:', ref.id)
   return ref.id
+}
+
+// ─────────────────────────────────────────────────────────────
+// deleteTransaction — 删除单条账单（deleteDoc）
+//
+// 设计：写入 deleteDoc 后依赖 onSnapshot 将该条从 billStore 移除 → UI 自动消失
+// 调用方绝不手动操作本地 Store，严守单向数据流红线
+//
+// @throws 若 Firestore 写入失败则向上抛出，由调用方处理 UI 错误态
+// ─────────────────────────────────────────────────────────────
+export async function deleteTransaction(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'transactions', id))
+  console.debug('[billService] 账单已从 Firestore 删除:', id)
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -66,7 +66,8 @@ const POLICY_OPTIONS: PolicyOption[] = [
 export interface CorrectionPolicyModalProps {
   isOpen:    boolean
   onClose:   () => void
-  onConfirm: (policy: CorrectionPolicy) => void
+  /** 返回 Promise — 弹窗在 await 期间保持打开并显示 ⏳ Loading 态 */
+  onConfirm: (policy: CorrectionPolicy) => Promise<void>
   // 修改上下文（可选，用于展示"你正在改什么"）
   field?:    string   // 被修改的字段，如"分类"
   oldValue?: string   // 修改前的值，如"未分类"
@@ -83,19 +84,27 @@ function CorrectionPolicyModal({
   newValue = '餐饮',
 }: CorrectionPolicyModalProps) {
   // 当前选中的策略
-  const [selected, setSelected] = useState<CorrectionPolicy | null>(null)
+  const [selected,     setSelected]     = useState<CorrectionPolicy | null>(null)
+  // Firestore 写入期间锁定按钮，避免重复提交
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // 弹窗关闭时重置选择
+  // 弹窗关闭时重置选择（提交中禁止关闭）
   function handleClose() {
+    if (isSubmitting) return
     setSelected(null)
     onClose()
   }
 
-  function handleConfirm() {
-    if (!selected) return
-    onConfirm(selected)
-    setSelected(null)
-    onClose()
+  async function handleConfirm() {
+    if (!selected || isSubmitting) return
+    setIsSubmitting(true)
+    try {
+      await onConfirm(selected)   // 等待 Firestore 写入完成（含批量 writeBatch）
+    } finally {
+      setIsSubmitting(false)
+      setSelected(null)
+      onClose()
+    }
   }
 
   if (!isOpen) return null
@@ -273,14 +282,14 @@ function CorrectionPolicyModal({
             取消
           </button>
 
-          {/* 确认（未选择时禁用；选中高危时变红） */}
+          {/* 确认（未选择时禁用；选中高危时变红；提交中显示 ⏳） */}
           <button
             onClick={handleConfirm}
-            disabled={!selected}
+            disabled={!selected || isSubmitting}
             className={`
               flex-[2] py-3 rounded-xl text-sm font-bold text-white
               transition-all duration-200
-              ${!selected
+              ${!selected || isSubmitting
                 ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                 : isDangerSelected
                   ? 'bg-red-500 hover:bg-red-600 shadow-[0_4px_16px_rgba(239,68,68,0.40)]'
@@ -288,8 +297,17 @@ function CorrectionPolicyModal({
               }
             `}
           >
-            {/* 高危操作显示警告图标 */}
-            {isDangerSelected ? (
+            {/* 提交中：旋转等待 */}
+            {isSubmitting ? (
+              <span className="flex items-center justify-center gap-1.5">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                写入云端…
+              </span>
+            ) : isDangerSelected ? (
+              /* 高危操作显示警告图标 */
               <span className="flex items-center justify-center gap-1.5">
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />

@@ -31,8 +31,42 @@ import ClockWidget   from '@/widgets/ClockWidget'
 import WeatherWidget from '@/widgets/WeatherWidget'
 
 // 类型
-import type { Transaction }      from '@/types/Transaction.types'
+import type { Transaction }                        from '@/types/Transaction.types'
 import type { CorrectionPolicy, CorrectionIntent } from '@/types/Transaction.types'
+
+// ─────────────────────────────────────────────────────────────
+// Toast — 轻量全局操作反馈（无第三方依赖）
+// ─────────────────────────────────────────────────────────────
+interface ToastData {
+  msg:  string
+  type: 'success' | 'warning' | 'error'
+}
+
+function Toast({ toast }: { toast: ToastData }) {
+  const colorMap = {
+    success: 'bg-emerald-500',
+    warning: 'bg-amber-500',
+    error:   'bg-red-500',
+  }
+  const iconMap = {
+    success: '✅',
+    warning: '⚠️',
+    error:   '❌',
+  }
+  return (
+    <div className={`
+      fixed top-5 left-1/2 -translate-x-1/2 z-[100]
+      px-4 py-2.5 rounded-2xl shadow-lg
+      text-sm font-semibold text-white
+      flex items-center gap-2
+      animate-[slideUp_0.2s_ease-out]
+      ${colorMap[toast.type]}
+    `}>
+      <span>{iconMap[toast.type]}</span>
+      <span>{toast.msg}</span>
+    </div>
+  )
+}
 
 // ─────────────────────────────────────────────────────────────
 // 分类图标映射
@@ -54,16 +88,35 @@ const CATEGORY_ICON: Record<string, { icon: string; bg: string }> = {
 const getCategoryMeta = (cat: string) => CATEGORY_ICON[cat] ?? { icon: '📋', bg: 'bg-gray-50' }
 
 // ─────────────────────────────────────────────────────────────
-// 子组件：单条账单行（带 hover 纠偏按钮 + 血缘标记）
+// 子组件：单条账单行
+// 交互：hover 显示 [🗑️删除] [✏️纠偏]，点击删除进入内联二次确认
+// 删除路径：deleteOne(id) → Firestore deleteDoc → onSnapshot → Store → UI 自动消失
 // ─────────────────────────────────────────────────────────────
 interface BillItemProps {
   transaction: Transaction
   onCorrect:   (tx: Transaction) => void
+  onDelete:    (id: string) => Promise<void>
 }
 
-function BillItem({ transaction: tx, onCorrect }: BillItemProps) {
+function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
   const { icon, bg } = getCategoryMeta(tx.category)
   const isIncome     = tx.amount > 0
+
+  // 内联二次确认状态机
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [isDeleting,    setIsDeleting]    = useState(false)
+
+  async function handleDeleteConfirm() {
+    setIsDeleting(true)
+    try {
+      await onDelete(tx.id)
+      // 不需要手动移除 — onSnapshot 会让该条从列表消失
+    } catch {
+      // 删除失败则退出确认态，让用户看到错误
+      setIsDeleting(false)
+      setConfirmDelete(false)
+    }
+  }
 
   return (
     <div className="flex items-center gap-3 py-3 px-1 group">
@@ -110,34 +163,85 @@ function BillItem({ transaction: tx, onCorrect }: BillItemProps) {
         </p>
       </div>
 
-      {/* 金额 + 纠偏按钮 */}
-      <div className="flex items-center gap-2 flex-shrink-0">
-        {/* hover 显示纠偏按钮 */}
-        <button
-          onClick={() => onCorrect(tx)}
-          title="纠偏分类"
-          className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
-                     text-content-tertiary hover:text-primary-600 hover:bg-primary-50
-                     transition-all opacity-0 group-hover:opacity-100"
-        >
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-          </svg>
-        </button>
+      {/* ── 右侧操作区 ────────────────────────────────────── */}
 
-        <div className="text-right">
-          <span className={`text-sm font-semibold tabular-nums
-            ${isIncome ? 'text-income' : 'text-content-primary'}`}>
-            {isIncome ? '+' : '-'}¥{formatAmount(Math.abs(tx.amount))}
-          </span>
-          <p className="text-[10px] text-content-tertiary mt-0.5">
-            {tx.source === 'wechat'  ? '微信'   :
-             tx.source === 'alipay'  ? '支付宝' :
-             tx.source === 'manual'  ? '手动'   : '银行'}
-          </p>
+      {/* 二次确认态：展开删除提示 */}
+      {confirmDelete ? (
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <span className="text-[11px] font-semibold text-red-500">确认删除?</span>
+          {/* 确认 ✓ */}
+          <button
+            onClick={handleDeleteConfirm}
+            disabled={isDeleting}
+            title="确认删除"
+            className="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center
+                       text-xs font-bold hover:bg-red-600 disabled:opacity-50 transition-colors"
+          >
+            {isDeleting ? (
+              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : '✓'}
+          </button>
+          {/* 取消 ✗ */}
+          <button
+            onClick={() => setConfirmDelete(false)}
+            disabled={isDeleting}
+            title="取消"
+            className="w-6 h-6 rounded-full bg-gray-200 text-gray-500 flex items-center justify-center
+                       text-xs font-bold hover:bg-gray-300 disabled:opacity-50 transition-colors"
+          >
+            ✗
+          </button>
         </div>
-      </div>
+      ) : (
+        /* 正常态：hover 显示操作按钮 + 金额 */
+        <div className="flex items-center gap-2 flex-shrink-0">
+
+          {/* 🗑️ 删除按钮（hover 可见，红色调） */}
+          <button
+            onClick={() => setConfirmDelete(true)}
+            title="删除此账单"
+            className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
+                       text-content-tertiary hover:text-red-500 hover:bg-red-50
+                       transition-all opacity-0 group-hover:opacity-100"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+
+          {/* ✏️ 纠偏按钮（hover 可见） */}
+          <button
+            onClick={() => onCorrect(tx)}
+            title="纠偏分类"
+            className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
+                       text-content-tertiary hover:text-primary-600 hover:bg-primary-50
+                       transition-all opacity-0 group-hover:opacity-100"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+          </button>
+
+          {/* 金额 + 来源 */}
+          <div className="text-right">
+            <span className={`text-sm font-semibold tabular-nums
+              ${isIncome ? 'text-income' : 'text-content-primary'}`}>
+              {isIncome ? '+' : '-'}¥{formatAmount(Math.abs(tx.amount))}
+            </span>
+            <p className="text-[10px] text-content-tertiary mt-0.5">
+              {tx.source === 'wechat'  ? '微信'   :
+               tx.source === 'alipay'  ? '支付宝' :
+               tx.source === 'manual'  ? '手动'   : '银行'}
+            </p>
+          </div>
+
+        </div>
+      )}
 
     </div>
   )
@@ -159,6 +263,7 @@ function HomePage() {
     income, expense, net,
     thisMonthBills, allLedgerBills, totalCount,
     billsReady,
+    correct, deleteOne,
   } = useBills()
   const { activeLedger } = useLedger()
 
@@ -190,14 +295,18 @@ function HomePage() {
   // 取最近 8 条展示
   const recentBills = thisMonthBills.slice(0, 8)
 
+  // ── Toast 状态 ────────────────────────────────────────────
+  const [toast, setToast] = useState<ToastData | null>(null)
+  function showToast(msg: string, type: ToastData['type'] = 'success') {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 3000)
+  }
+
   // ── 弹窗状态 ──────────────────────────────────────────────
   const [importOpen,      setImportOpen]      = useState(false)
   const [correctionOpen,  setCorrectionOpen]  = useState(false)
   const [correctionCtx,   setCorrectionCtx]   = useState<CorrectionCtx | null>(null)
   const [omniOpen,        setOmniOpen]        = useState(false)
-
-  // ── useBills 的 correct 函数（带账套隔离保证） ────────────
-  const { correct } = useBills()
 
   // ── 点击账单行的纠偏按钮 ─────────────────────────────────
   function handleCorrect(tx: Transaction) {
@@ -206,8 +315,9 @@ function HomePage() {
     setCorrectionOpen(true)
   }
 
-  // ── 纠偏弹窗确认 ─────────────────────────────────────────
-  function handleCorrectionConfirm(policy: CorrectionPolicy) {
+  // ── 纠偏弹窗确认（async：等待 Firestore 写入后关闭弹窗，批量时弹 Toast）
+  // 注意：CorrectionPolicyModal 内部 await 此函数，期间显示 ⏳ Loading
+  async function handleCorrectionConfirm(policy: CorrectionPolicy): Promise<void> {
     if (!correctionCtx) return
     const intent: CorrectionIntent = {
       transactionId: correctionCtx.tx.id,
@@ -216,13 +326,27 @@ function HomePage() {
       newValue:      correctionCtx.newValue,
       policy,
     }
-    correct(policy, intent)
-    setCorrectionOpen(false)
+    const matchedCount = await correct(policy, intent)
+    // 批量溯及既往时显示受影响计数 Toast
+    if (policy === 'retroactive' && matchedCount > 1) {
+      showToast(`已批量更新 ${matchedCount} 条历史记录`, 'success')
+    }
     setCorrectionCtx(null)
+    // 弹窗关闭由 CorrectionPolicyModal 内部 handleConfirm finally 负责
+  }
+
+  // ── 删除账单：调用 Firestore deleteDoc，绝不碰本地 Store ──
+  // onSnapshot 会自动让该条从列表消失（单向数据流红线）
+  async function handleDeleteBill(id: string): Promise<void> {
+    await deleteOne(id)
+    showToast('账单已删除', 'success')
   }
 
   return (
     <div className="page-container">
+
+      {/* ══ 全局 Toast（操作反馈：删除 / 批量纠偏计数）══════ */}
+      {toast && <Toast toast={toast} />}
 
       {/* ══ 顶部标题栏：账套切换器（已绑定 Store） ═══════════ */}
       <div className="flex items-center justify-between mb-4 pt-1">
@@ -563,7 +687,11 @@ function HomePage() {
               {recentBills.length > 0 ? (
                 recentBills.map((tx, index) => (
                   <div key={tx.id}>
-                    <BillItem transaction={tx} onCorrect={handleCorrect} />
+                    <BillItem
+                      transaction={tx}
+                      onCorrect={handleCorrect}
+                      onDelete={handleDeleteBill}
+                    />
                     {index < recentBills.length - 1 && (
                       <div className="divider ml-14" />
                     )}
@@ -611,6 +739,7 @@ function HomePage() {
       <OmniInputModal
         isOpen={omniOpen}
         onClose={() => setOmniOpen(false)}
+        showToast={showToast}
       />
       <ImportModal
         isOpen={importOpen}

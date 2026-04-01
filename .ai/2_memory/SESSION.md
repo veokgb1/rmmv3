@@ -2,6 +2,75 @@
 
 ---
 
+## ✅ S10 — AI 视觉引擎接入（Gemini 拍小票，封板）
+
+### S10 完成清单（V3-指令-10，2026-04-01）
+
+- [x] `npm install @google/generative-ai`：Google AI SDK v0.24.1 引入
+- [x] `src/services/aiService.ts`：Gemini AI 视觉神经（全新文件）
+  - 模型：`gemini-2.5-flash`（视觉 + 速度 + 成本最优均衡点）
+  - `analyzeReceipt(base64Image, mimeType)`：图片 → 结构化 `ReceiptAnalysisResult`
+  - Prompt Engineering：专业财务助理角色 + R4 分类白名单穷举 + 强制纯 JSON 输出 + todayStr() fallback
+  - 防御层：Markdown 代码块自动清洗 + 分类合法性白名单校验 + 金额有效性验证
+  - 错误语义化分类：quota / auth / network / JSON 解析 → 各自对应中文用户提示
+- [x] `src/components/input/OmniInputModal.tsx`：📸 拍小票 Tab 全面点亮（移除 disabled + 🚧 标记）
+  - `OcrPanel` 子组件：5 级状态机（idle → preview → analyzing → done / error）
+  - idle：引导上传区（点击选图 / 拍照，input capture="environment"）+ Gemini 功能说明条
+  - preview：图片缩略图 + 「让 Gemini 识别」按钮 + 右上角重选入口
+  - analyzing：扫描线动画 + 4 条滚动文案（每 1.8s 切换）+ 进度点指示器
+  - done：自动切回手写 Tab，表单字段已自动填满（amount / category / date / notes）
+  - error：用户可见错误 + 重新识别 / 换图 双入口
+  - 魔法时刻：拍照 → 识别 → **切回手写 Tab，表单全自动填满**，用户一键确认即保存
+- [x] `tailwind.config.js`：新增 `scanline` 关键帧动画（AI 扫描线效果）
+- [x] `src/pages/HomePage.tsx`：OmniInputModal 补传 `showToast` prop（AI 识别成功/失败 Toast 反馈）
+- [x] `docs/04_AI_GOVERNANCE.md`：AI 引擎治理文档（全新文件）
+  - 确立 `gemini-2.5-flash` 为最低可用版本底线
+  - 明确降级熔断红线（禁止回退 1.x 系列）
+  - 演进路线（未来平滑升级至 3.x+）
+  - 错误码与降级策略完整表格
+  - 测试基准（黄金测试用例 4 个场景）
+- [x] `.ai/1_harness/RULES.md`：新增 R9 — AI 模型版本治理（摘要条目 + 指向详细文档）
+- [x] TypeScript 零错误 + Vite build 成功（3.18s，735 模块）
+
+**单向数据流闭环**（AI 路径）：
+```
+图片文件 → FileReader → Base64 → Gemini API → JSON → 填表单 → addTransaction → Firestore
+→ onSnapshot → billStore → useBills → UI 自动重绘
+```
+
+### S10 已知限制（后续迭代）
+- 4MB 图片大小限制（Gemini inline data 上限）
+- 语音 Tab（🎤）仍为 S11 占位，尚未接入
+- AI 识别结果无法二次纠偏至 OCR 工作流（ocrStatus 字段预留，S11+ 实现）
+
+---
+
+## ✅ S9 — CRUD 完整闭环（删除 + 纠偏云端化，封板）
+
+### S9 完成清单（V3-指令-09，2026-04-01）
+
+- [x] `src/services/firebase/billService.ts`：新增 `deleteTransaction(id)` — `deleteDoc` 实现
+  - 仅删除 Firestore 文档，不触碰本地 Store，onSnapshot 负责移除 UI 账单行
+- [x] `src/hooks/useBills.ts`：`correct()` 升级为 async，返回 `Promise<number>`（matchedCount）
+  - 等待 Firestore 写入完成（而非 fire-and-forget），供上层驱动 Loading 态
+  - 新增 `deleteOne(id)` — 调用 `deleteTransaction` + 打日志，不改 Store
+  - `UseBillsReturn` 接口补充 `deleteOne` 和新签名
+- [x] `src/components/ledger/CorrectionPolicyModal.tsx`：Loading 态
+  - `onConfirm` 类型升级为 `(policy) => Promise<void>`
+  - 内部 `handleConfirm` 变为 async，await 期间显示旋转圈 + "写入云端…"
+  - isSubmitting 期间禁止关闭弹窗（防止重复提交）
+- [x] `src/pages/HomePage.tsx`：
+  - `BillItem` 新增 `onDelete` prop + 内联二次确认 UI（确认删除? ✓ ✗）
+  - 🗑️ 删除按钮 hover 可见，红色调，独立于纠偏按钮
+  - `handleCorrectionConfirm` 升级为 async，await correct()，retroactive 时弹 Toast 显示更新条数
+  - `handleDeleteBill` — 调 `deleteOne` + 成功 Toast "账单已删除"
+  - 全局 `Toast` 轻量组件（success / warning / error 三态，3s 自动消失）
+- [x] TypeScript 零错误 + Vite build 成功
+
+**铁律坚守**：S9 全程无任何手动 Store 操作，100% 遵循"云端改动 → onSnapshot → Store → UI 重绘"红线。
+
+---
+
 ## ✅ 当前阶段：S4 — 账单解析引擎（战略升级版，封板归档）
 
 ### S4 基础解析引擎（完成清单）
