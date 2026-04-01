@@ -103,8 +103,8 @@ export function parseWechat(
     if (date   === null) parseErrors.push('DATE_PARSE_FAILED')
     if (amount === null) parseErrors.push('AMOUNT_PARSE_FAILED')
 
-    // 战略支柱①：从"支付方式"字段推断资金账户 ID
-    const accountId = guessAccountId(row[COL.METHOD])
+    // 战略支柱①：从"支付方式"字段推断资金账户 ID（传入平台标识以正确归属银行卡）
+    const accountId = guessAccountId(row[COL.METHOD], 'wechat')
 
     // 首次解析结果快照（写入 originalParsedData，后续人工修正后仍可追溯）
     const originalParsedData: Record<string, unknown> = {

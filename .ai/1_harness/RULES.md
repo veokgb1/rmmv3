@@ -16,23 +16,49 @@
 
 ## R2 — 统一数据模型（Transaction）
 
+> ⚠️ 此为 S4 战略升级版，与 `src/types/Transaction.types.ts` 保持同步。
+
 无论来源，每条记录最终必须能映射到此结构，**不得丢失字段**：
 
 ```typescript
-// 核心账单记录类型
+// 核心账单记录类型（S4 战略升级版）
 interface Transaction {
-  id: string;             // Firestore 文档 ID（自动生成）
-  userId: string;         // 用户 ID（数据隔离键）
-  date: string;           // 交易日期 YYYY-MM-DD
-  amount: number;         // 金额（正数=收入，负数=支出）
-  category: string;       // 一级分类（见 R4）
-  subCategory?: string;   // 二级分类（用户自定义）
-  description: string;    // 交易描述/备注
-  source: 'wechat' | 'alipay' | 'manual' | 'bank'; // 数据来源
-  rawData: Record<string, unknown>; // 原始行数据（完整保留，永不丢弃）
-  parseError?: string;    // 解析错误标记（有值=该字段解析失败）
-  isDuplicate?: boolean;  // 疑似重复标记
-  createdAt: Timestamp;   // 写入时间戳
+  // ── 系统字段（Service 层自动注入）─────────────────────────
+  id:        string   // Firestore 文档 ID
+  createdAt: number   // 首次写入时间戳（毫秒）
+  updatedAt: number   // 最后修改时间戳（毫秒）
+
+  // ── 多账套隔离键（查询第一条件）──────────────────────────
+  ledgerId:  string   // 账套 ID（如 'personal' / 'mingpao-ca'）
+  userId:    string   // Firebase Auth UID
+
+  // ── 业务核心字段 ───────────────────────────────────────────
+  date:         string    // 交易日期 YYYY-MM-DD
+  amount:       number    // 金额（正数=收入，负数=支出）
+  category:     string    // 一级分类（见 R4）
+  subCategory?: string    // 二级分类（用户自定义）
+  description:  string    // 交易描述/备注
+
+  // ── 战略支柱①：多维标签与资金账户 ───────────────────────
+  tags:      string[]  // 多维标签数组（自由打标）
+  accountId: string    // 资金账户 ID（关联 Account 集合）
+
+  // ── 战略支柱②：录入方式与溯源 ──────────────────────────
+  sourceType: 'csv' | 'ocr' | 'voice' | 'manual'  // 录入方式
+  source:     'wechat' | 'alipay' | 'manual' | 'bank' | 'ocr'
+  rawData:    Record<string, unknown>   // 原始行数据（永不覆盖）
+  originalParsedData?: Record<string, unknown>  // 解析器首次输出存档
+  isManuallyEdited?: boolean            // 是否经过人工修正
+
+  // ── OCR 专用字段（sourceType='ocr' 时有效）───────────────
+  ocrStatus?:     'pending' | 'reviewing' | 'confirmed' | 'rejected'
+  ocrConfidence?: number          // 整体置信度 0-1
+  ocrDoubtSpans?: OcrDoubtSpan[]  // 字段级存疑区域列表
+
+  // ── 数据质量标记 ───────────────────────────────────────────
+  parseError?:  string    // 解析错误描述
+  isDuplicate?: boolean   // 疑似重复标记
+  isVerified?:  boolean   // 人工核实完成标记
 }
 ```
 

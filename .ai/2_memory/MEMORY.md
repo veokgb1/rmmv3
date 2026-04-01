@@ -58,12 +58,13 @@ users/
 ## 里程碑完成记录
 
 - [x] S0 — AI 治理矩阵初始化（2026-03-31）
-- [ ] S1 — Vite 项目初始化 + Firebase 接入
-- [ ] S2 — 用户认证（登录/注册/路由守卫）
-- [ ] S3 — 数据模型与 Firestore 结构
-- [ ] S4 — 账单解析引擎（微信/支付宝 CSV）
-- [ ] S5 — 手动记账功能
-- [ ] S6 — 统计与图表
-- [ ] S7 — 分类管理
-- [ ] S8 — 数据导出
-- [ ] S9 — 性能优化与 Firebase Hosting 部署
+- [x] S1 — Vite + React + TS + Tailwind 骨架（2026-03-31）
+- [x] S2 — UI 增强：Mock 数据、Clock、天气、首页精美化（2026-03-31）
+- [x] S3 — Firestore Schema + TypeScript 类型体系（ledgerId 预留）（2026-03-31）
+- [x] S4 — 解析引擎：CSV解析器 + ImportModal + 三大战略字段注入（2026-04-01）
+- [ ] S5 — Firebase 接入：用户认证 + 账单写入 Firestore（⏳ 等待 Firebase Config）
+- [ ] S6 — 统计图表：月度趋势、分类饼图、OCR 核对 UI
+- [ ] S7 — 权限与多账套：账套切换 UI、RBAC、溯及既往修正
+- [ ] S8 — 数据导出：按账套导出 CSV / Excel
+- [ ] S9 — 优化上线：性能优化、Firebase Hosting
+- [ ] SX — 收尾增强：换皮肤 / 模型中控台 / OCR 强化

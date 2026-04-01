@@ -110,8 +110,8 @@ export function parseAlipay(
     if (date   === null) parseErrors.push('DATE_PARSE_FAILED')
     if (amount === null) parseErrors.push('AMOUNT_PARSE_FAILED')
 
-    // 战略支柱①：从"收/付款方式"字段推断资金账户 ID
-    const accountId = guessAccountId(row[COL.METHOD])
+    // 战略支柱①：从"收/付款方式"字段推断资金账户 ID（传入平台标识以正确归属银行卡）
+    const accountId = guessAccountId(row[COL.METHOD], 'alipay')
 
     // 首次解析结果快照
     const originalParsedData: Record<string, unknown> = {

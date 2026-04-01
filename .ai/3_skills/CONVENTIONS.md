@@ -22,15 +22,15 @@ src/
 │   │   ├── BillListItem.tsx      # 单条账单项
 │   │   └── BillListFilter.tsx    # 筛选栏
 │   ├── Charts/
-│   │   ├── MonthlyBarChart.tsx   # 月度收支柱状图
-│   │   └── CategoryPieChart.tsx  # 分类占比饼图
-│   ├── Import/
-│   │   ├── FileDropzone.tsx      # 文件拖拽上传区
-│   │   └── ImportProgress.tsx    # 导入进度展示
-│   └── common/
-│       ├── Button.tsx            # 通用按钮
-│       ├── Modal.tsx             # 通用弹窗
-│       └── LoadingSpinner.tsx    # 加载状态
+│   │   ├── MonthlyBarChart.tsx   # 月度收支柱状图（S6）
+│   │   └── CategoryPieChart.tsx  # 分类占比饼图（S6）
+│   ├── import/
+│   │   └── ImportModal.tsx       # 导入弹窗（粘贴→解析→预览，S4 已完成）
+│   ├── layout/
+│   │   └── BottomNav.tsx         # 底部导航栏
+│   └── widgets/
+│       ├── ClockWidget.tsx       # 实时时钟组件
+│       └── WeatherWidget.tsx     # 天气组件（Mock 数据，S6 接真实 API）
 │
 ├── 3_hooks/              # ③ 业务逻辑层（React Hooks，处理状态与副作用）
 │   ├── useBills.ts           # 账单数据读写（CRUD）
@@ -46,9 +46,10 @@ src/
 │   │   ├── authService.ts        # Firebase Auth 操作
 │   │   └── storageService.ts     # Firebase Storage 操作
 │   └── parsers/
+│       ├── index.ts              # 主入口：detectSource + parseBillText
 │       ├── wechatParser.ts       # 微信账单 CSV 解析器
 │       ├── alipayParser.ts       # 支付宝账单 CSV 解析器
-│       └── parseUtils.ts         # 解析公共工具（金额、日期）
+│       └── parseUtils.ts         # 解析公共工具（金额、日期、分类）
 │
 ├── 5_store/              # ⑤ 全局状态层（Zustand）
 │   ├── authStore.ts          # 用户认证状态（持久化）
@@ -61,9 +62,12 @@ src/
 │   └── categoryUtils.ts      # 分类关键词匹配
 │
 └── types/                # 类型定义（跨层共享，不归属任何层）
-    ├── Transaction.types.ts  # Transaction 接口
-    ├── Category.types.ts     # Category 接口
-    └── ParseResult.types.ts  # 解析结果接口
+    ├── Transaction.types.ts  # Transaction 接口（含战略支柱字段）
+    ├── ParseResult.types.ts  # ParsedTransaction + ParseResult 接口
+    ├── Account.types.ts      # 资金账户类型 + guessAccountId()
+    ├── Ledger.types.ts       # 账套 + 成员 + 角色（RBAC）
+    ├── Category.types.ts     # SystemCategory + CustomCategory
+    └── User.types.ts         # UserProfile + 偏好设置
 ```
 
 ---
