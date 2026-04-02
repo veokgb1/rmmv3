@@ -475,10 +475,10 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
                   🎤
                   <span>{isListening ? '点击停止' : '语音追加'}</span>
                   {isListening && (
-                    <span className={`ml-1 font-bold tabular-nums ${
+                    <span className={`ml-1 font-bold tabular-nums tracking-widest ${
                       voiceSeconds < 10 ? 'text-yellow-200' : 'text-red-100'
                     }`}>
-                      {voiceSeconds}s
+                      {String(Math.floor(voiceSeconds / 60)).padStart(2, '0')}:{String(voiceSeconds % 60).padStart(2, '0')}
                     </span>
                   )}
                 </button>
@@ -587,7 +587,7 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
           </div>
 
           {/* ② 可滚动的审核卡片列表（弹性占满剩余高度） */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-4 pb-3 space-y-3">
+          <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-4 pb-32 space-y-3">
             {drafts.length === 0 ? (
               <div className="text-center py-8">
                 <p className="text-sm text-content-tertiary">所有条目已移除</p>
@@ -969,7 +969,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
       <div className="fixed inset-x-0 bottom-0 z-50
                       sm:max-w-lg sm:mx-auto sm:bottom-4 sm:rounded-2xl
                       bg-white rounded-t-2xl shadow-2xl
-                      max-h-[90dvh] flex flex-col
+                      max-h-[85vh] flex flex-col
                       animate-[slideUp_0.25s_ease-out]">
 
         {/* ══ ① Header：把手 + 标题行 + Tab 切换栏（固定不滚动）══ */}
@@ -1046,7 +1046,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
           {activeTab === 'manual' && (
             <>
               {/* 表单字段滚动区 */}
-              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-4 space-y-4">
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-32 space-y-4">
 
                 {/* 收支类型 */}
                 <div className="flex gap-2 p-1 bg-surface-overlay rounded-xl">
