@@ -22,6 +22,8 @@ import {
   parseNaturalLanguageBatch,
 }                              from '@/services/aiService'
 import { useLedgerStore }      from '@/store/ledgerStore'
+import { useAuthStore }        from '@/store/authStore'
+import { getCurrencySymbol, CURRENCY_SYMBOLS } from '@/utils/numberUtils'
 import type { SystemCategory } from '@/types/Category.types'
 import type { Transaction }    from '@/types/Transaction.types'
 
@@ -241,6 +243,8 @@ interface SmartPanelProps {
 }
 
 function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
+  // user?.uid ?? '' — 防御性写法：auth token 刷新期间 user 短暂为 null 时不崩溃
+  const currentUserId = useAuthStore(s => s.user?.uid ?? '')
   const [smartState,  setSmartState]  = useState<SmartState>('input')
   const [inputText,   setInputText]   = useState('')
   const [drafts,      setDrafts]      = useState<DraftItem[]>([])
@@ -384,7 +388,7 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
         const newRef = doc(txCol)
         const txData: Omit<Transaction, 'id'> = {
           ledgerId:         activeLedgerId,
-          userId:           'mock-user',
+          userId:           currentUserId,
           date:             item.date,
           amount:           -Math.abs(item.amount),
           category:         item.category,
@@ -879,6 +883,8 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   const [category,  setCategory]  = useState<SystemCategory>('餐饮')
   const [date,      setDate]      = useState(todayStr())
   const [note,      setNote]      = useState('')
+  // 币种：可选，默认人民币，用户可在表单中切换
+  const [currency,  setCurrency]  = useState<string>('CNY')
 
   type SubmitState = 'idle' | 'saving' | 'success' | 'error'
   const [submitState, setSubmitState] = useState<SubmitState>('idle')
@@ -889,7 +895,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     setCategory(txType === 'income' ? '工资' : '餐饮')
   }, [txType])
 
-  // 打开时重置所有状态
+  // 打开时重置所有状态，并同步当前账套的货币
   useEffect(() => {
     if (isOpen) {
       setActiveTab('manual')
@@ -900,8 +906,9 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
       setNote('')
       setSubmitState('idle')
       setErrorMsg('')
+      setCurrency(activeLedgerCurrency)  // 用账套货币初始化
     }
-  }, [isOpen])
+  }, [isOpen, activeLedgerCurrency])
 
   // 金额框自动聚焦
   const amountRef = useRef<HTMLInputElement>(null)
@@ -911,7 +918,12 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     }
   }, [isOpen, activeTab])
 
-  const activeLedgerId = useLedgerStore(s => s.activeLedgerId)
+  const activeLedgerId  = useLedgerStore(s => s.activeLedgerId)
+  const currentUserId   = useAuthStore(s => s.user?.uid ?? '')
+  // 读取当前账套的货币，作为 currency 默认值（账套切换时同步）
+  const activeLedgerCurrency = useLedgerStore(s =>
+    s.ledgers.find(l => l.id === s.activeLedgerId)?.currency ?? 'CNY'
+  )
 
   function validate(): string | null {
     const amt = parseFloat(amountStr)
@@ -926,7 +938,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     setErrorMsg(''); setSubmitState('saving')
     const amt = parseFloat(amountStr)
     const data: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> = {
-      ledgerId: activeLedgerId, userId: 'mock-user', date,
+      ledgerId: activeLedgerId, userId: currentUserId, date,
       amount:   txType === 'income' ? amt : -amt,
       category, description: note.trim() || category,
       source: 'manual', sourceType: 'manual', status: 'cleared',
@@ -956,29 +968,37 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
 
   return (
     <>
-      {/* 遮罩 */}
-      <div className="fixed inset-0 bg-black/30 z-40 backdrop-blur-[2px]" onClick={onClose} />
+      {/* ══════════════════════════════════════════════════════
+          居中 Modal — 遮罩层（点击空白关闭）
+          fixed inset-0 + flex items-center justify-center
+          遮罩单独一层，Modal 本体绝对居中
+      ══════════════════════════════════════════════════════ */}
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center
+                   bg-black/50 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
 
       {/* ══════════════════════════════════════════════════════
-          底部抽屉 — 三段式 Flex 根容器
-          移动端：全宽底部滑入
-          PC 端  ：居中悬浮卡片（sm:max-w-lg sm:mx-auto sm:bottom-4）
-          高度   ：max-h-[90dvh]，dvh 自动处理浏览器工具栏遮挡
-          不设 overflow-y-auto — 滚动由各 Tab 内部区域独立管理
+          Modal 本体 — 三段式 Flex 根容器
+          宽度  ：w-[95%] sm:max-w-lg，三 Tab 切换宽度绝对稳定
+          高度  ：max-h-[90dvh]，内容自动撑开，极限截断 dvh
+          圆角  ：rounded-2xl（全局圆角，非贴底半圆）
+          内部不设 overflow-y-auto — 滚动由各 Tab Body 区独立管理
       ══════════════════════════════════════════════════════ */}
-      <div className="fixed inset-x-0 bottom-0 z-50
-                      sm:max-w-lg sm:mx-auto sm:bottom-4 sm:rounded-2xl
-                      bg-white rounded-t-2xl shadow-2xl
-                      max-h-[85vh] flex flex-col
-                      animate-[slideUp_0.25s_ease-out]">
+      <div className="fixed inset-0 z-50 flex items-center justify-center
+                      pointer-events-none">
+        <div
+          className="w-[95%] sm:max-w-lg
+                     bg-white rounded-2xl shadow-xl
+                     max-h-[90dvh] flex flex-col overflow-hidden
+                     pointer-events-auto
+                     animate-[slideUp_0.25s_ease-out]"
+          onClick={e => e.stopPropagation()}
+        >
 
-        {/* ══ ① Header：把手 + 标题行 + Tab 切换栏（固定不滚动）══ */}
-        <div className="flex-shrink-0">
-
-          {/* 把手 */}
-          <div className="flex justify-center pt-3 pb-1">
-            <div className="w-10 h-1 bg-gray-200 rounded-full" />
-          </div>
+        {/* ══ ① Header：标题行 + Tab 切换栏（固定不滚动）══ */}
+        <div className="flex-shrink-0 pt-4">
 
           {/* 标题行 */}
           <div className="flex items-center justify-between px-5 pb-3">
@@ -1046,7 +1066,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
           {activeTab === 'manual' && (
             <>
               {/* 表单字段滚动区 */}
-              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-32 space-y-4">
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-4 space-y-4">
 
                 {/* 收支类型 */}
                 <div className="flex gap-2 p-1 bg-surface-overlay rounded-xl">
@@ -1062,8 +1082,9 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
 
                 {/* 金额 */}
                 <div className="relative">
+                  {/* 货币符号随 currency 状态动态更新 */}
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-content-tertiary">
-                    {txType === 'income' ? '+¥' : '-¥'}
+                    {txType === 'income' ? '+' : '-'}{getCurrencySymbol(currency)}
                   </span>
                   <input
                     ref={amountRef}
@@ -1117,6 +1138,26 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                                border-2 border-transparent focus:border-primary-300 focus:bg-white
                                outline-none transition-all placeholder:text-gray-300"
                   />
+                </div>
+
+                {/* 币种选择 */}
+                <div>
+                  <p className="text-xs font-semibold text-content-secondary mb-2">币种（选填）</p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(CURRENCY_SYMBOLS).map(([code, sym]) => (
+                      <button
+                        key={code}
+                        onClick={() => setCurrency(code)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${
+                          currency === code
+                            ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
+                            : 'bg-surface-overlay text-content-secondary border-transparent hover:border-gray-200'
+                        }`}
+                      >
+                        {sym} {code}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* 账套提示 */}
@@ -1174,7 +1215,8 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
           )}
 
         </div>
-      </div>
+        </div>{/* Modal 本体结束 */}
+      </div>{/* 居中定位层结束 */}
     </>
   )
 }

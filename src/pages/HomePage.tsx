@@ -1,7 +1,7 @@
 // 首页 — S7 全面实时化：Firestore onSnapshot 驱动，骨架屏 Loading
 // 数据流：Firestore → onSnapshot → billStore/ledgerStore → useBills → UI
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { pushInitialData, type SyncResult } from '@/services/dbSync'
 import {
   StatCardsSkeleton,
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/Skeleton'
 import ImportModal           from '@/components/import/ImportModal'
 import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
+import LedgerManagerModal    from '@/components/ledger/LedgerManagerModal'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
 import OmniInputModal        from '@/components/input/OmniInputModal'
 import MonthlyBarChart       from '@/components/statistics/MonthlyBarChart'
@@ -19,8 +20,9 @@ import BudgetProgressBar     from '@/components/statistics/BudgetProgressBar'
 import ExpenseRankingList    from '@/components/statistics/ExpenseRankingList'
 
 // 业务 Hook（订阅 Zustand Store，替代所有 Mock 常量）
-import { useBills }  from '@/hooks/useBills'
-import { useLedger } from '@/hooks/useLedger'
+import { useBills }     from '@/hooks/useBills'
+import { useLedger }    from '@/hooks/useLedger'
+import { useBillStats } from '@/hooks/useBillStats'
 
 // 工具函数
 import { formatAmount }  from '@/utils/numberUtils'
@@ -29,6 +31,11 @@ import { toChineseDate } from '@/utils/dateUtils'
 // Widget 组件
 import ClockWidget   from '@/widgets/ClockWidget'
 import WeatherWidget from '@/widgets/WeatherWidget'
+
+// 搜索 + 主题
+import ThemeToggle        from '@/components/ui/ThemeToggle'
+import SearchBar          from '@/components/ui/SearchBar'
+import { useSearchBills } from '@/hooks/useSearchBills'
 
 // 类型
 import type { Transaction }                        from '@/types/Transaction.types'
@@ -267,6 +274,16 @@ function HomePage() {
   } = useBills()
   const { activeLedger } = useLedger()
 
+  // ── 智慧看板数据：日均、分类占比、预算剩余、预计月支出 ──────────
+  const {
+    totalExpense, dailyAvg, budget, budgetRemaining,
+    overrun, overrunAmount, projectedExpense,
+    daysElapsed, daysInMonth, categorySlices,
+  } = useBillStats()
+
+  // ── 分类筛选状态（饼图扇区点击联动账单列表）────────────────────
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+
   // ── 视图切换状态 ──────────────────────────────────────────
   const [activeSection, setActiveSection] = useState<'detail' | 'stats'>('detail')
 
@@ -292,8 +309,18 @@ function HomePage() {
     }
   }
 
-  // 取最近 8 条展示
-  const recentBills = thisMonthBills.slice(0, 8)
+  // ── 搜索状态（useSearchBills 在全月账单上做客户端过滤）───────
+  const {
+    searchQuery, setSearchQuery, clearSearch,
+    filteredBills: searchedBills, isSearching, matchCount,
+  } = useSearchBills(thisMonthBills)
+
+  // 账单展示优先级：搜索 > 分类筛选 > 默认最近 8 条
+  const recentBills = useMemo(() => {
+    if (isSearching)      return searchedBills                                       // 搜索结果全量
+    if (selectedCategory) return thisMonthBills.filter(t => t.category === selectedCategory)
+    return thisMonthBills.slice(0, 8)                                                // 默认最近 8 条
+  }, [thisMonthBills, selectedCategory, isSearching, searchedBills])
 
   // ── Toast 状态 ────────────────────────────────────────────
   const [toast, setToast] = useState<ToastData | null>(null)
@@ -307,6 +334,7 @@ function HomePage() {
   const [correctionOpen,  setCorrectionOpen]  = useState(false)
   const [correctionCtx,   setCorrectionCtx]   = useState<CorrectionCtx | null>(null)
   const [omniOpen,        setOmniOpen]        = useState(false)
+  const [managerOpen,     setManagerOpen]     = useState(false)
 
   // ── 点击账单行的纠偏按钮 ─────────────────────────────────
   function handleCorrect(tx: Transaction) {
@@ -350,10 +378,14 @@ function HomePage() {
 
       {/* ══ 顶部标题栏：账套切换器（已绑定 Store） ═══════════ */}
       <div className="flex items-center justify-between mb-4 pt-1">
-        {/* LedgerSwitcher 不再需要任何 Props，直接读写 Store */}
-        <LedgerSwitcher />
-        <div className="w-9 h-9 rounded-full bg-primary-100 flex items-center justify-center text-base flex-shrink-0">
-          👤
+        {/* LedgerSwitcher：S17 新增 onManage 回调，点击「管理账套」打开 LedgerManagerModal */}
+        <LedgerSwitcher onManage={() => setManagerOpen(true)} />
+        {/* 右侧工具栏：主题切换 + 账户头像 */}
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <ThemeToggle />
+          <div className="w-9 h-9 rounded-full bg-primary-100 flex items-center justify-center text-base">
+            👤
+          </div>
         </div>
       </div>
 
@@ -395,6 +427,74 @@ function HomePage() {
           </div>
         </div>
       </div>
+
+      {/* ══ 智慧看板：三核心指标卡（本月总支出 / 日均开销 / 预算剩余）══ */}
+      {billsReady ? (
+        <div className="grid grid-cols-3 gap-2 mb-4">
+
+          {/* 卡片①：本月总支出 */}
+          <div className="card py-3 px-3">
+            <div className="flex items-center gap-1 mb-1.5">
+              <span className="text-sm">📉</span>
+              <p className="text-[10px] text-content-tertiary truncate">本月支出</p>
+            </div>
+            <p className="text-sm font-bold text-rose-500 tabular-nums leading-tight">
+              <span className="text-[10px] mr-0.5">¥</span>
+              {totalExpense.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+            </p>
+            <p className="text-[10px] text-content-tertiary mt-0.5">
+              共 {totalCount} 笔
+            </p>
+          </div>
+
+          {/* 卡片②：日均开销 */}
+          <div className="card py-3 px-3">
+            <div className="flex items-center gap-1 mb-1.5">
+              <span className="text-sm">📆</span>
+              <p className="text-[10px] text-content-tertiary truncate">日均开销</p>
+            </div>
+            <p className="text-sm font-bold text-amber-600 tabular-nums leading-tight">
+              <span className="text-[10px] mr-0.5">¥</span>
+              {dailyAvg.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+            </p>
+            <p className="text-[10px] text-content-tertiary mt-0.5">
+              已过 {daysElapsed}/{daysInMonth} 天
+            </p>
+          </div>
+
+          {/* 卡片③：预算剩余 / 超支 */}
+          <div className="card py-3 px-3">
+            <div className="flex items-center gap-1 mb-1.5">
+              <span className="text-sm">{overrun ? '⚠️' : '💰'}</span>
+              <p className="text-[10px] text-content-tertiary truncate">
+                {overrun ? '已超支' : '预算剩余'}
+              </p>
+            </div>
+            <p className={`text-sm font-bold tabular-nums leading-tight ${
+              overrun ? 'text-red-500' : 'text-emerald-600'
+            }`}>
+              <span className="text-[10px] mr-0.5">¥</span>
+              {(overrun ? overrunAmount : budgetRemaining)
+                .toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+            </p>
+            <p className="text-[10px] text-content-tertiary mt-0.5">
+              预算 ¥{budget.toLocaleString()}
+            </p>
+          </div>
+
+        </div>
+      ) : (
+        /* 加载骨架 */
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="card py-3 px-3 animate-pulse">
+              <div className="h-2 bg-gray-100 rounded mb-2 w-3/4" />
+              <div className="h-4 bg-gray-100 rounded mb-1 w-1/2" />
+              <div className="h-2 bg-gray-100 rounded w-2/3" />
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ══ 快捷操作 ══════════════════════════════════════════ */}
       <div className="grid grid-cols-2 gap-3 mb-4">
@@ -670,17 +770,81 @@ function HomePage() {
             </button>
           </div>
 
+          {/* ── 智慧看板：消费分类环形图（可点击联动下方账单列表）── */}
+          {!billsReady && <ChartSkeleton height="h-44" />}
+          {billsReady && categorySlices.length > 0 && (
+            <div className="card mb-4">
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-sm font-semibold text-content-primary">本月消费分布</h2>
+                <span className="text-[11px] text-content-tertiary">点击扇区筛选账单</span>
+              </div>
+
+              {/* 环形饼图（ResponsiveContainer 保证移动端自适应） */}
+              <CategoryPieChart
+                bills={thisMonthBills}
+                onCategoryClick={setSelectedCategory}
+                selectedCategory={selectedCategory}
+              />
+
+              {/* ── 趋势分析文字 ───────────────────────────────── */}
+              <div className={`mt-3 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed ${
+                projectedExpense > budget
+                  ? 'bg-rose-50 text-rose-700'
+                  : 'bg-emerald-50 text-emerald-700'
+              }`}>
+                <span className="font-semibold">趋势分析：</span>
+                按目前日均 <span className="font-bold tabular-nums">
+                  ¥{dailyAvg.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+                </span> 的速度，
+                本月预计支出 <span className="font-bold tabular-nums">
+                  ¥{projectedExpense.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+                </span>
+                {projectedExpense > budget ? (
+                  <>，将<span className="font-bold">超出预算</span>{' '}
+                  <span className="font-bold tabular-nums">
+                    ¥{(projectedExpense - budget).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+                  </span>，建议控制{categorySlices[0]?.name ?? ''}等支出。</>
+                ) : (
+                  <>，预算充裕，预计剩余{' '}
+                  <span className="font-bold tabular-nums">
+                    ¥{(budget - projectedExpense).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+                  </span>。</>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── 账单搜索栏 ─────────────────────────────────── */}
+          {billsReady && (
+            <div className="mb-3">
+              <SearchBar
+                value={searchQuery}
+                onChange={setSearchQuery}
+                onClear={clearSearch}
+                matchCount={matchCount}
+                isSearching={isSearching}
+              />
+            </div>
+          )}
+
           {/* 最近账单列表 — 骨架屏 */}
           {!billsReady && <BillListSkeleton rows={5} />}
 
           {/* 最近账单列表 */}
           {billsReady && <div className="card">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="text-sm font-semibold text-content-primary">最近账单</h2>
+              <h2 className="text-sm font-semibold text-content-primary">
+                {isSearching      ? `搜索「${searchQuery}」`          :
+                 selectedCategory ? `「${selectedCategory}」账单`     : '最近账单'}
+              </h2>
               <button className="text-xs text-primary-600 font-medium">查看全部 ›</button>
             </div>
             <p className="text-xs text-content-tertiary mb-3">
-              本月共 {totalCount} 笔记录 · 悬停可纠偏分类
+              {isSearching
+                ? `找到 ${matchCount} 条匹配记录`
+                : selectedCategory
+                  ? `本月 ${selectedCategory} 共 ${recentBills.length} 笔 · 点击环形图空白区可清除筛选`
+                  : `本月共 ${totalCount} 笔记录 · 悬停可纠偏分类`}
             </p>
 
             <div>
@@ -699,18 +863,21 @@ function HomePage() {
                 ))
               ) : (
                 <div className="py-10 text-center">
-                  <p className="text-3xl mb-2">📋</p>
+                  <p className="text-3xl mb-2">{isSearching ? '🔍' : '📋'}</p>
                   <p className="text-sm text-content-tertiary">
-                    「{activeLedger?.name}」本月暂无账单
+                    {isSearching
+                      ? `未找到含「${searchQuery}」的账单`
+                      : `「${activeLedger?.name}」本月暂无账单`}
                   </p>
                   <p className="text-xs text-content-tertiary mt-1 opacity-70">
-                    导入账单或手动记账后显示
+                    {isSearching ? '试试其他关键词' : '导入账单或手动记账后显示'}
                   </p>
                 </div>
               )}
             </div>
 
-            {totalCount > 8 && (
+            {/* 无分类筛选时才展示"还有 X 条"提示 */}
+            {!selectedCategory && totalCount > 8 && (
               <button className="w-full mt-3 py-2.5 text-xs text-content-tertiary
                                  bg-surface-overlay rounded-lg text-center hover:bg-gray-100
                                  transition-colors">
@@ -752,6 +919,12 @@ function HomePage() {
         field={correctionCtx?.field ?? '分类'}
         oldValue={correctionCtx?.oldValue ?? ''}
         newValue={correctionCtx?.newValue ?? ''}
+      />
+
+      {/* S17：账套管理中心弹窗（从 LedgerSwitcher "管理账套" 按钮触发） */}
+      <LedgerManagerModal
+        isOpen={managerOpen}
+        onClose={() => setManagerOpen(false)}
       />
 
     </div>

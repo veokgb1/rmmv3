@@ -47,3 +47,9 @@ coverage/
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+# Firebase 服务账号密钥 (敏感文件)
+v2-key.json
+v3-key.json
+
+# 本地环境变量 (含私密 ID)
+.env.local

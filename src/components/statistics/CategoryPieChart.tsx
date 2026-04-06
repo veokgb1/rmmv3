@@ -129,10 +129,18 @@ function CustomLegend({ payload }: LegendProps) {
 // 主组件
 // ─────────────────────────────────────────────────────────────
 interface CategoryPieChartProps {
-  bills: Transaction[]  // 调用方传入 thisMonthBills（已按账套隔离）
+  bills:             Transaction[]                          // 调用方传入 thisMonthBills（已按账套隔离）
+  /** 点击扇区回调：传 null = 取消筛选，传分类名 = 激活该分类筛选 */
+  onCategoryClick?:  (category: string | null) => void
+  /** 当前激活的筛选分类（null = 全部显示） */
+  selectedCategory?: string | null
 }
 
-export default function CategoryPieChart({ bills }: CategoryPieChartProps) {
+export default function CategoryPieChart({
+  bills,
+  onCategoryClick,
+  selectedCategory,
+}: CategoryPieChartProps) {
   const data = useMemo(() => buildCategoryData(bills), [bills])
 
   if (data.length === 0) {
@@ -142,6 +150,12 @@ export default function CategoryPieChart({ bills }: CategoryPieChartProps) {
         <p className="text-xs text-content-tertiary">本月暂无支出数据</p>
       </div>
     )
+  }
+
+  // 点击扇区：再次点击同一分类则取消筛选（toggle 逻辑）
+  function handlePieClick(entry: CategorySlice) {
+    if (!onCategoryClick) return
+    onCategoryClick(selectedCategory === entry.name ? null : entry.name)
   }
 
   return (
@@ -158,15 +172,40 @@ export default function CategoryPieChart({ bills }: CategoryPieChartProps) {
             dataKey="value"
             animationBegin={0}
             animationDuration={600}
+            onClick={(entry: CategorySlice) => handlePieClick(entry)}
+            style={onCategoryClick ? { cursor: 'pointer' } : undefined}
           >
             {data.map((entry, index) => (
-              <Cell key={`cell-${index}`} fill={entry.color} />
+              <Cell
+                key={`cell-${index}`}
+                fill={entry.color}
+                // 有选中分类时：未选中的扇区半透明，选中扇区保持实色
+                opacity={selectedCategory && selectedCategory !== entry.name ? 0.3 : 1}
+                stroke={selectedCategory === entry.name ? '#fff' : 'none'}
+                strokeWidth={selectedCategory === entry.name ? 2 : 0}
+              />
             ))}
           </Pie>
           <Tooltip content={<CustomTooltip />} />
           <Legend content={<CustomLegend />} />
         </PieChart>
       </ResponsiveContainer>
+
+      {/* 筛选激活提示条 */}
+      {selectedCategory && onCategoryClick && (
+        <div className="flex items-center justify-between px-1 mt-1">
+          <p className="text-[11px] text-primary-600 font-medium">
+            已筛选：{selectedCategory}
+          </p>
+          <button
+            onClick={() => onCategoryClick(null)}
+            className="text-[11px] text-content-tertiary hover:text-content-secondary
+                       underline underline-offset-2 transition-colors"
+          >
+            清除筛选
+          </button>
+        </div>
+      )}
     </div>
   )
 }

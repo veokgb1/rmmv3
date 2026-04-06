@@ -2,6 +2,165 @@
 
 ---
 
+## ✅ S18 — 适老化双轨登录与实时越权阻断（封板）
+
+### S18 完成清单（V3-指令-18，2026-04-02）
+
+- [x] `src/services/authService.ts`：追加邮箱认证方法
+  - `loginWithEmail(email, password)` — `signInWithEmailAndPassword`
+  - `registerWithEmail(email, password)` — `createUserWithEmailAndPassword`（注册即登录）
+- [x] `src/pages/LoginPage.tsx`：双轨登录 UI 全量重写
+  - **轨道 A**：Google 弹窗一键登录（原 S16 功能保留）
+  - **分隔线**：「──── 或 ────」视觉分隔双轨
+  - **轨道 B**：邮箱密码表单
+    - `登录 / 注册新账号` 模式 Tab（切换时清空密码，防填错复用）
+    - 邮箱输入框、密码输入框（含显示/隐藏眼睛按钮）
+    - 注册模式额外展示「确认密码」字段
+    - 客户端预校验（格式/长度/一致性）+ Firebase 错误码中文映射（11 种）
+  - 外层改为 `overflow-y-auto` 可滚动，防小屏截断
+  - 统一 Loading 互斥（Google 与邮箱同一时刻只能一个 in-flight）
+- [x] `src/store/ledgerStore.ts`：S18 实时越权阻断版（全量重写）
+  - 新增 `EjectionInfo` 类型：`{ ledgerId, ledgerName, ejectedAt }`
+  - Store 新增字段：`ejectionInfo: EjectionInfo | null`
+  - Store 新增 Action：`setEjectionInfo()` / `clearEjection()`
+  - `startLedgerListener` 检测逻辑分两阶段：
+    - **首次快照**（`prevLedgers.length === 0`）：静默切换（持久化数据可能已过期）
+    - **后续快照**：`prevLedgers` 有 activeLedger 且 `myLedgers` 无此账套 → 越权事件
+      1. `setEjectionInfo({ ledgerId, ledgerName, ejectedAt })` — 记录被踢账套名称
+      2. 强制 `setActiveLedgerId(myLedgers[0]?.id ?? '')` — 切到第一个合法账套
+- [x] `src/components/ledger/EjectionBlocker.tsx`：全屏阻断层（全新文件）
+  - `z-[200]`，高于所有业务 Modal（z-50），物理覆盖一切
+  - 红色渐变警示头部（警告图标 + 标题 + 副标题）
+  - 被踢账套名称 + 精确时间（`toLocaleString('zh-CN')`）
+  - 若仍有其他账套：绿色提示"已自动切换至 X 账套"
+  - 若无账套剩余：提示创建新账套
+  - 唯一出口：「我已知晓，继续使用」→ `clearEjection()` → 阻断层消失
+  - 无遮罩点击关闭（`stopPropagation`），彻底阻断穿透操作
+- [x] `src/App.tsx`：MainApp 挂载 EjectionBlocker（全局单例，路由树之外）
+- [x] TypeScript 零错误（tsc --noEmit 无输出）
+
+**Firebase Console 需额外开启的开关**：
+- Authentication → Sign-in method → **电子邮件/密码** → 启用
+
+**越权阻断完整时序**：
+```
+Owner 在 LedgerManagerModal 移除成员 A
+  → Firestore updateDoc(members: filtered)
+  → 成员 A 的 onSnapshot 回调触发（实时，约 1-2 秒内）
+  → startLedgerListener 检测：prevLedgers 有此账套，myLedgers 无
+  → setEjectionInfo({ ledgerName: '全家福', ... })
+  → setActiveLedgerId(fallback)
+  → EjectionBlocker 渲染全屏红色警告（z-200，无法穿透）
+  → 成员 A 点击「我已知晓」→ clearEjection() → 正常使用剩余账套
+```
+
+---
+
+## ✅ S17 — 开启协作纪元：账套管理与成员邀请（封板）
+
+### S17 完成清单（V3-指令-17，2026-04-02）
+
+- [x] `src/services/firebase/userService.ts`：用户档案服务（全新文件）
+  - `ensureUserProfile(user)`：首次 / 每次登录 setDoc merge:true 同步 `users/{uid}`
+    - 首次登录写全量字段（uid/displayName/email/photoURL/createdAt/updatedAt）
+    - 后续登录仅更新可变字段（displayName/photoURL/updatedAt）
+    - email 统一小写存储，保证邀请查询一致性
+  - `findUserByEmail(email)`：查询 `users` where `email ==` 归一化邮箱
+    - ⚠️ 需在 Firebase Console 为 `users.email` 添加单字段索引
+- [x] `src/services/firebase/ledgerService.ts`：账套 CRUD 服务（全新文件）
+  - `createLedger(ownerUid, input)`：addDoc 创建账套，owner 自动写入 members[]
+  - `inviteMemberByEmail(ledgerId, email, currentMembers)`：
+    - 查邮箱 → 检重 → 覆写 members 数组追加 `{ role: 'editor' }` 新成员
+    - 若用户未注册或已是成员，抛出中文友好错误
+  - `removeMember(ledgerId, targetUid, currentMembers)`：过滤后覆写 members 数组
+  - `updateLedger(ledgerId, patch)`：更新 name/description/currency/isArchived
+- [x] `src/components/ledger/LedgerManagerModal.tsx`：账套管理中心（全新文件）
+  - 三视图状态机：`list` → `create` | `detail`
+  - **list 视图**：所有用户账套，`👑 创建者` / `👤 参与者` 徽标；Owner 点击进入详情
+  - **create 视图**：名称 + 三类型卡片选择 + 货币下拉 + 时区下拉 + 描述；一键创建
+  - **detail 视图**（Owner Only）：成员列表（角色/加入日期） + ✕移除按钮 + 邀请表单（邮箱输入）
+  - onSnapshot 驱动：创建/邀请/移除后 Firestore 推送 → ledgerStore 自动更新 → UI 实时刷新
+- [x] `src/store/authStore.ts`：`startAuthListener` 注入 `ensureUserProfile`
+  - fire-and-forget：不阻塞 App 启动，profile 同步失败只 warn，不 crash
+- [x] `src/pages/SettingsPage.tsx`：全面升级（重写）
+  - 真实用户卡片：Google photoURL / 首字母渐变头像 fallback / displayName / email / 已登录徽标
+  - 账套管理入口：「🗂️ 账套管理」→ `<LedgerManagerModal>`；展示参与账套数量
+  - 退出登录按钮：`logout()` → `onAuthStateChanged(null)` → App 自动跳回 LoginPage
+- [x] `src/components/ledger/LedgerSwitcher.tsx`：新增 `onManage?` prop
+  - 「管理账套」按钮从 disabled S7 占位 → 真实可点击（齿轮图标 + 调用 `onManage()`）
+- [x] `src/pages/HomePage.tsx`：
+  - 引入 `LedgerManagerModal`，新增 `managerOpen` 状态
+  - `<LedgerSwitcher onManage={() => setManagerOpen(true)} />`
+  - 末尾挂载 `<LedgerManagerModal isOpen={managerOpen} onClose={...} />`
+- [x] TypeScript 零错误（tsc --noEmit 无输出）
+
+**数据流闭环**：
+```
+创建账套：createLedger() → Firestore addDoc → onSnapshot → ledgerStore.setLedgers()
+          → 列表自动出现（无需手动 reload）
+
+邀请成员：findUserByEmail() → inviteMemberByEmail() → Firestore updateDoc(members[])
+          → onSnapshot → ledgerStore → detail 视图成员列表实时刷新
+
+首次登录：onAuthStateChanged → ensureUserProfile() → users/{uid} 写入
+          → findUserByEmail() 后续查询可命中
+```
+
+**Firestore 数据结构变化**（见下方交付说明）
+
+---
+
+## ✅ S16 — 铸造护城墙：Firebase Auth 真实账号系统（封板）
+
+### S16 完成清单（V3-指令-16，2026-04-02）
+
+- [x] `src/config/firebase.ts`：新增 `getAuth(app)` → 导出 `auth: Auth` 单例
+- [x] `src/services/authService.ts`：轻量认证服务（全新文件）
+  - `loginWithGoogle()`：`GoogleAuthProvider` + `signInWithPopup`，强制账号选择弹窗
+  - `logout()`：`signOut(auth)` 登出
+  - `subscribeToAuth(callback)`：封装 `onAuthStateChanged`，供 authStore 统一调用
+- [x] `src/store/authStore.ts`：Auth 全局状态机（全新文件）
+  - `user: User | null`（来自 Firebase Auth 的真实用户对象）
+  - `authReady: boolean`（Firebase SDK 完成持久化登录恢复后置为 true）
+  - `startAuthListener()`：建立 onAuthStateChanged 监听，返回 unsubscribe
+  - 设计：不使用 persist（Firebase SDK 自行管理 IndexedDB 持久化）
+- [x] `src/pages/LoginPage.tsx`：全屏科技感登录页（全新文件）
+  - 深色渐变背景（gray-950）+ 多层放射状光晕 + 40px 细网格线装饰
+  - 居中卡片：backdrop-blur 毛玻璃 + 渐变 Logo 图标 + "RMM V3" 标题
+  - 「使用 Google 账号登录」按钮（白底/Google SVG Logo）
+  - 登录中旋转圈 Loading 态 + 失败 Toast 错误展示
+  - `getAuthErrorMessage()`：auth/* 错误码友好翻译（8 种常见错误中文映射）
+- [x] `src/App.tsx`：Auth 路由状态机（全面重写）
+  - `useEffect` 启动 `startAuthListener()`（一次，全局生命周期）
+  - `!authReady` → `GlobalLoadingScreen`（旋转圈 + "RMM V3 启动中…"）
+  - `authReady && !user` → `LoginPage`（未登录，无任何主应用路由暴露）
+  - `authReady && user` → `MainApp`（独立子组件，挂载时才调用 useFirestoreSync）
+  - **关键架构**：`MainApp` 独立组件确保 Firestore 监听只在登录后启动
+- [x] `src/hooks/useFirestoreSync.ts`：S16 Auth 版
+  - 从 `useAuthStore` 读取 `user!.uid`（此 Hook 仅在 MainApp 中运行，uid 必定有效）
+  - 将 uid 传给 `startLedgerListener(uid)` — 按用户成员关系过滤账套
+- [x] `src/store/ledgerStore.ts`：`startLedgerListener(uid)` 新增 uid 参数
+  - 客户端过滤：`allLedgers.filter(l => l.members?.some(m => m.userId === uid))`
+  - TODO S17：改为服务端 `collectionGroup('members')` 查询 + Security Rules
+- [x] `src/components/input/OmniInputModal.tsx`：废弃 `userId: 'mock-user'`
+  - 引入 `useAuthStore`，在 SmartPanel 和手写 Tab 两处读取 `user!.uid`
+  - 所有 `addTransaction` / `writeBatch` 写入均携带真实 Firebase Auth UID
+- [x] TypeScript 零错误（tsc --noEmit 无输出）
+
+**Auth 状态机完整流程**：
+```
+页面加载 → authReady=false → GlobalLoadingScreen
+          ↓ Firebase SDK 恢复持久化登录（~200-500ms）
+          → onAuthStateChanged 触发 → authReady=true
+          → user=null → LoginPage
+          → user≠null → MainApp → useFirestoreSync(uid) → Firestore 监听建立
+用户登出  → onAuthStateChanged(null) → user=null → 自动跳回 LoginPage
+```
+
+**Firebase Console 必须操作**（见下方交付说明）
+
+---
+
 ## ✅ S13 — 弹窗布局全局架构重构（三段式 Flex，封板）
 
 ### S13 完成清单（V3-指令-13，2026-04-02）

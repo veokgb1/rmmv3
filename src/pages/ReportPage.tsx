@@ -1,88 +1,163 @@
-// 报表页：月度收支统计、分类占比分析
-// 对应路由：/report
+// ReportPage — 财务报表页 (S19 全功能版)
+//
+// 功能：
+//   ① 月份切换器（最近 6 个月，默认本月）
+//   ② StatCards：所选月收入 / 支出 / 净结余
+//   ③ MonthlyBarChart：全账套近 6 个月趋势（不受月份切换影响，展示完整趋势）
+//   ④ CategoryPieChart：所选月支出分类占比
+//   ⑤ ExpenseRankingList：所选月支出分类排行
 
-/**
- * 报表页组件
- * 职责（S1 阶段为占位骨架，S6 阶段接入图表库和真实数据）：
- *  - 月度收支趋势折线图
- *  - 支出分类占比饼图
- *  - 各分类支出金额排行
- */
+import { useState, useMemo } from 'react'
+import { useBills }          from '@/hooks/useBills'
+import { useLedgerStore }    from '@/store/ledgerStore'
+import { useBillStore }      from '@/store/billStore'
+
+import StatCards          from '@/components/statistics/StatCards'
+import MonthlyBarChart    from '@/components/statistics/MonthlyBarChart'
+import CategoryPieChart   from '@/components/statistics/CategoryPieChart'
+import ExpenseRankingList from '@/components/statistics/ExpenseRankingList'
+
+// ── 月份工具函数 ────────────────────────────────────────────────
+
+interface MonthOption {
+  key:   string   // YYYY-MM
+  label: string   // 展示文字，如"4月"；本月加 "(本月)"
+}
+
+/** 生成最近 N 个月的月份选项，最新在前 */
+function buildMonthOptions(n = 6): MonthOption[] {
+  const options: MonthOption[] = []
+  const now = new Date()
+  const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+  for (let i = 0; i < n; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const shortLabel = `${d.getMonth() + 1}月`
+    options.push({
+      key,
+      label: key === thisMonthKey ? `${shortLabel} · 本月` : shortLabel,
+    })
+  }
+  return options   // 最新在前（index 0 = 本月）
+}
+
+// ── 主组件 ─────────────────────────────────────────────────────
+
 function ReportPage() {
-  return (
-    // 页面容器
-    <div className="p-4 space-y-4">
+  // 月份选项列表（常量，不依赖账套）
+  const monthOptions = useMemo(() => buildMonthOptions(6), [])
 
-      {/* ── 页面标题 ── */}
+  // 当前选中的月份（默认本月）
+  const [selectedMonth, setSelectedMonth] = useState<string>(monthOptions[0].key)
+
+  // 账套货币（传给 StatCards / ExpenseRankingList）
+  const activeLedger = useLedgerStore(s => s.ledgers.find(l => l.id === s.activeLedgerId))
+  const currency     = activeLedger?.currency ?? 'CNY'
+
+  // 账单数据（全量 + ready 状态）
+  const allLedgerBills = useBillStore(s => s._allTransactions)
+  const billsReady     = useBillStore(s => s.billsReady)
+
+  // 当前选中月份的账单（StatCards / PieChart / RankingList 使用）
+  const selectedMonthBills = useMemo(() =>
+    allLedgerBills.filter(
+      tx => tx.status !== 'void' && tx.date.startsWith(selectedMonth)
+    ),
+    [allLedgerBills, selectedMonth]
+  )
+
+  // 所选月份的收支汇总（StatCards props）
+  const { income, expense, net } = useMemo(() => {
+    let inc = 0, exp = 0
+    selectedMonthBills.forEach(tx => {
+      if (tx.amount > 0) inc += tx.amount
+      else               exp -= tx.amount
+    })
+    return { income: inc, expense: exp, net: inc - exp }
+  }, [selectedMonthBills])
+
+  return (
+    <div className="p-4 space-y-4 pb-6">
+
+      {/* ── 标题 ──────────────────────────────────────────────── */}
       <div className="pt-2">
         <h1 className="text-xl font-bold text-gray-900">财务报表</h1>
-        <p className="text-xs text-gray-400 mt-1">可视化你的收支结构与趋势</p>
+        <p className="text-xs text-gray-400 mt-1">可视化收支结构与趋势</p>
       </div>
 
-      {/* ── 月份切换标签栏（S6 阶段实现） ── */}
-      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl">
-        {/* 近三个月的月份标签 */}
-        {['1月', '2月', '3月'].map((month, index) => (
+      {/* ── 月份切换器 ─────────────────────────────────────────── */}
+      <div className="flex gap-1 overflow-x-auto pb-0.5 scrollbar-none">
+        {monthOptions.map(opt => (
           <button
-            key={month}
-            // 最后一项（本月）默认选中高亮
-            className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              index === 2
-                ? 'bg-white text-primary-600 shadow-sm' // 当前选中状态
-                : 'text-gray-500 hover:text-gray-700'   // 未选中状态
+            key={opt.key}
+            onClick={() => setSelectedMonth(opt.key)}
+            className={`flex-shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-medium
+                        transition-colors whitespace-nowrap ${
+              selectedMonth === opt.key
+                ? 'bg-gray-900 text-white shadow-sm'
+                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
             }`}
           >
-            {month}
+            {opt.label}
           </button>
         ))}
       </div>
 
-      {/* ── 月度趋势图占位（S6 阶段接入 Recharts） ── */}
-      <div className="card">
-        <p className="text-sm font-medium text-gray-700 mb-1">月度收支趋势</p>
-        <p className="text-xs text-gray-400 mb-4">近12个月收入与支出对比</p>
-        {/* 图表占位区域 */}
-        <div className="h-40 bg-gray-50 rounded-lg flex items-center justify-center border border-dashed border-gray-200">
-          <div className="text-center text-gray-300">
-            <p className="text-3xl mb-1">📈</p>
-            <p className="text-xs">图表将在 S6 阶段接入</p>
+      {/* ── 骨架屏（数据未就绪） ──────────────────────────────── */}
+      {!billsReady && (
+        <div className="space-y-3">
+          <div className="flex gap-2.5">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="flex-1 h-20 bg-gray-100 rounded-2xl animate-pulse" />
+            ))}
           </div>
+          <div className="h-52 bg-gray-100 rounded-2xl animate-pulse" />
+          <div className="h-52 bg-gray-100 rounded-2xl animate-pulse" />
+          <div className="h-48 bg-gray-100 rounded-2xl animate-pulse" />
         </div>
-      </div>
+      )}
 
-      {/* ── 支出分类占比占位（S6 阶段接入饼图） ── */}
-      <div className="card">
-        <p className="text-sm font-medium text-gray-700 mb-1">支出分类占比</p>
-        <p className="text-xs text-gray-400 mb-4">本月各类别支出比例</p>
-        {/* 饼图占位区域 */}
-        <div className="h-40 bg-gray-50 rounded-lg flex items-center justify-center border border-dashed border-gray-200">
-          <div className="text-center text-gray-300">
-            <p className="text-3xl mb-1">🥧</p>
-            <p className="text-xs">图表将在 S6 阶段接入</p>
+      {/* ── 数据就绪后的真实内容 ──────────────────────────────── */}
+      {billsReady && (
+        <>
+          {/* ① KPI 卡：收入 / 支出 / 净结余 */}
+          <StatCards
+            income={income}
+            expense={expense}
+            net={net}
+            currency={currency}
+          />
+
+          {/* ② 月度趋势柱状图（展示全量账套账单，体现完整趋势） */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+            <p className="text-sm font-semibold text-gray-800 mb-0.5">月度收支趋势</p>
+            <p className="text-xs text-gray-400 mb-4">近 6 个月收入与支出对比</p>
+            <MonthlyBarChart bills={allLedgerBills} />
           </div>
-        </div>
-      </div>
 
-      {/* ── 分类排行占位（S6 阶段实现） ── */}
-      <div className="card">
-        <p className="text-sm font-medium text-gray-700 mb-3">分类支出排行</p>
-        {/* 用占位条目模拟最终样式 */}
-        {['餐饮', '交通', '购物', '娱乐'].map((category) => (
-          <div key={category} className="flex items-center gap-3 py-2 border-b border-gray-50 last:border-0">
-            <span className="text-sm text-gray-600 w-10">{category}</span>
-            {/* 进度条占位 */}
-            <div className="flex-1 h-2 bg-gray-100 rounded-full">
-              <div className="h-2 bg-gray-200 rounded-full w-1/3" />
-            </div>
-            {/* 金额占位 */}
-            <span className="text-sm text-gray-300 w-12 text-right">¥ --</span>
+          {/* ③ 本月支出分类占比饼图 */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+            <p className="text-sm font-semibold text-gray-800 mb-0.5">支出分类占比</p>
+            <p className="text-xs text-gray-400 mb-3">
+              {monthOptions.find(o => o.key === selectedMonth)?.label ?? selectedMonth} 各类别支出比例
+            </p>
+            <CategoryPieChart bills={selectedMonthBills} />
           </div>
-        ))}
-      </div>
 
+          {/* ④ 分类支出排行榜 */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+            <p className="text-sm font-semibold text-gray-800 mb-3">分类支出排行</p>
+            <ExpenseRankingList
+              bills={selectedMonthBills}
+              topN={8}
+              currency={currency}
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-// 导出报表页组件供路由使用
 export default ReportPage

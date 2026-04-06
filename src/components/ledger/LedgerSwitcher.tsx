@@ -23,9 +23,10 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 
 // ── 组件 Props ────────────────────────────────────────────────
 // S7 升级：组件直接读取 ledgerStore，无需父组件传入 Props
-// 保留可选的 onAfterChange 回调，供父组件（如首页）做额外副作用（如埋点）
+// S17 新增：onManage 回调 — 点击「管理账套」时触发，父组件负责打开 LedgerManagerModal
 interface LedgerSwitcherProps {
   onAfterChange?: (ledgerId: string) => void
+  onManage?:      () => void
 }
 
 // ── Toast 组件（内联，仅此组件使用）─────────────────────────
@@ -56,7 +57,7 @@ function InlineToast({ message, visible }: ToastProps) {
 }
 
 // ── 主组件 ─────────────────────────────────────────────────────
-function LedgerSwitcher({ onAfterChange }: LedgerSwitcherProps) {
+function LedgerSwitcher({ onAfterChange, onManage }: LedgerSwitcherProps) {
   // 直接从 Zustand Store 读取状态，无需 Props 传递
   const {
     activeLedgerId,
@@ -255,18 +256,31 @@ function LedgerSwitcher({ onAfterChange }: LedgerSwitcherProps) {
               })}
             </div>
 
-            {/* 菜单底部：管理账套入口（S7 完成后激活） */}
+            {/* 菜单底部：管理账套入口（S17 已激活） */}
             <div className="px-4 py-3 border-t border-border-light">
-              <button className="
-                w-full flex items-center justify-center gap-1.5
-                text-xs text-content-tertiary hover:text-primary-600
-                transition-colors py-1
-              ">
+              <button
+                onClick={() => { setIsOpen(false); onManage?.() }}
+                className="
+                  w-full flex items-center justify-center gap-1.5
+                  text-xs text-content-tertiary hover:text-primary-600
+                  transition-colors py-1 rounded-lg hover:bg-primary-50
+                "
+              >
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0
+                       002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0
+                       001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0
+                       00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0
+                       00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0
+                       00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0
+                       00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0
+                       001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07
+                       2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
                 <span>管理账套</span>
-                <span className="ml-1 px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded text-[10px] font-bold">S7</span>
               </button>
             </div>
           </div>

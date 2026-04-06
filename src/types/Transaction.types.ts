@@ -162,6 +162,23 @@ export interface Transaction {
   isDuplicate?: boolean   // 疑似重复标记（人工确认后清除）
   isVerified?:  boolean   // 人工核实完成标记
 
+  // ── § 3.9b 凭证图片（V2 历史迁移 + 未来拍照附件） ────────────
+  /**
+   * receiptUrls — 账单附件图片 URL 数组
+   *
+   * 来源：
+   *   · V2 → V3 迁移：migrateV2toV3.js 将 V2 voucher 图片
+   *     下载后上传至 V3 Storage，新 URL 写入此字段
+   *   · 未来 S10+ 拍照记账：用户录入时拍照，图片存此字段
+   *
+   * 存储路径约定：
+   *   receipts/{ledgerId}/{transactionId}/{filename}
+   *
+   * 上限建议 10 张（UI 层校验，Service 层不强制）
+   * 空数组 [] 与 undefined 等价，写 Firestore 时省略此字段即可
+   */
+  receiptUrls?: string[]
+
     // ── § 3.10 预支出与平替基因 ──────────────────────────────
   /**
    * status — 账单的生命周期状态

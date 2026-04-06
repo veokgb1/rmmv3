@@ -28,41 +28,40 @@ export default {
           900: '#134e4a',
         },
 
-        // ── 语义色：收入绿 ──────────────────────────────────────
+        // ── 语义色：收入绿（指向 CSS 变量，自动响应暗色模式）────
         income: {
-          DEFAULT: '#16a34a',  // 收入金额文字
-          bg:      '#f0fdf4',  // 收入条目背景
-          light:   '#86efac',  // 收入图标/标签
+          DEFAULT: 'var(--color-income)',     // 收入金额文字
+          bg:      'var(--color-income-bg)',  // 收入条目背景
+          light:   '#86efac',                 // 收入图标/标签（固定，暗色也适用）
         },
 
         // ── 语义色：支出红 ──────────────────────────────────────
         expense: {
-          DEFAULT: '#dc2626',  // 支出金额文字
-          bg:      '#fff1f2',  // 支出条目背景
-          light:   '#fca5a5',  // 支出图标/标签
+          DEFAULT: 'var(--color-expense)',    // 支出金额文字
+          bg:      'var(--color-expense-bg)', // 支出条目背景
+          light:   '#fca5a5',                 // 支出图标/标签（固定）
         },
 
-        // ── 背景层级系统（浅色模式） ───────────────────────────
-        // 使用层级命名，语义清晰，便于暗色模式覆盖
+        // ── 背景层级系统（CSS 变量驱动，html.dark 自动切换）────
         surface: {
-          page:    '#f8fafc',  // 页面底色（最底层）
-          card:    '#ffffff',  // 卡片背景（第二层）
-          overlay: '#f1f5f9',  // 输入框、标签等（第三层）
+          page:    'var(--color-bg-page)',    // 页面底色
+          card:    'var(--color-bg-card)',    // 卡片背景
+          overlay: 'var(--color-bg-overlay)',// 输入框、标签等
         },
 
         // ── 文字层级系统 ────────────────────────────────────────
         content: {
-          primary:   '#0f172a',  // 主要文字（标题、金额）
-          secondary: '#475569',  // 次要文字（描述、日期）
-          tertiary:  '#94a3b8',  // 辅助文字（占位符、标注）
-          inverse:   '#ffffff',  // 反色文字（用于深色背景上）
+          primary:   'var(--color-text-primary)',   // 主要文字
+          secondary: 'var(--color-text-secondary)', // 次要文字
+          tertiary:  'var(--color-text-tertiary)',  // 辅助文字
+          inverse:   '#ffffff',                      // 反色文字（恒白，置于深色背景）
         },
 
         // ── 边框色 ──────────────────────────────────────────────
         border: {
-          DEFAULT: '#e2e8f0',  // 默认边框
-          light:   '#f1f5f9',  // 轻量分割线
-          focus:   '#14b8a6',  // 聚焦态边框（与 primary-500 一致）
+          DEFAULT: 'var(--color-border)',       // 默认边框
+          light:   'var(--color-border-light)', // 轻量分割线
+          focus:   '#14b8a6',                   // 聚焦态边框（固定品牌色）
         },
       },
 

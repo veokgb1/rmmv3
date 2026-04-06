@@ -439,3 +439,67 @@ export async function parseNaturalLanguageBatch(
   console.info(`[aiService·batch] 从 ${trimmed.length} 字文本中解析出 ${results.length} 条账单`)
   return results
 }
+
+// ─────────────────────────────────────────────────────────────
+// mapCategoryBatch — 批量 AI 分类映射（ImportModal 本地解析兜底）
+//
+// 用途：当本地关键词表（mapCategory）返回"未分类"时，
+//   批量发送原始描述给 Gemini，一次请求覆盖所有未命中条目。
+//
+// 设计原则：
+//   · 失败时静默降级（返回空 Map），不抛出错误——调用方保持"未分类"即可
+//   · 一次批量请求，不为每条单独调用（节省配额）
+//
+// @param items  需要映射的条目数组（id + 描述文本）
+// @returns      id → SystemCategory 的 Map（未找到的 id 不在 Map 中）
+// ─────────────────────────────────────────────────────────────
+export async function mapCategoryBatch(
+  items: Array<{ id: string; description: string }>,
+): Promise<Map<string, SystemCategory>> {
+
+  // 无 API Key 或无数据时，直接返回空 Map
+  if (!GEMINI_API_KEY || items.length === 0) return new Map()
+
+  // 所有合法的一级分类
+  const VALID: SystemCategory[] = [
+    '餐饮', '交通', '购物', '娱乐', '医疗', '居住', '教育',
+    '工资', '副业收入', '理财收益', '转账', '未分类',
+  ]
+
+  const prompt = `你是一个账单分类助手。将每条账单描述映射到最匹配的标准分类。
+
+标准分类（只能从以下选项中选一个，不得创造新值）：
+${VALID.filter(c => c !== '未分类').join('、')}、未分类
+
+输入（JSON 数组，每条含 id 和 description）：
+${JSON.stringify(items)}
+
+输出要求：
+- 只返回纯 JSON 数组，绝不使用 Markdown 代码块（如 \`\`\`json）
+- 格式：[{"id":"xxx","category":"餐饮"},{"id":"yyy","category":"交通"},...]
+- 每个 id 必须与输入中的 id 对应，category 必须从标准分类中选取`
+
+  try {
+    const resp   = await model.generateContent(prompt)
+    const raw    = resp.response.text().trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim()
+    const parsed = JSON.parse(raw) as Array<{ id: string; category: string }>
+    const result = new Map<string, SystemCategory>()
+    for (const { id, category } of parsed) {
+      result.set(
+        id,
+        VALID.includes(category as SystemCategory)
+          ? (category as SystemCategory)
+          : '未分类',
+      )
+    }
+    console.info(`[aiService·mapCategoryBatch] AI 映射了 ${result.size} 个分类`)
+    return result
+  } catch (err) {
+    // 静默降级：分类映射失败不阻断导入流程
+    console.warn('[aiService·mapCategoryBatch] AI 分类映射失败，降级为"未分类":', err)
+    return new Map()
+  }
+}
