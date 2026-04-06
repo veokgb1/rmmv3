@@ -8,7 +8,6 @@
 //   ⑤ ExpenseRankingList：所选月支出分类排行
 
 import { useState, useMemo } from 'react'
-import { useBills }          from '@/hooks/useBills'
 import { useLedgerStore }    from '@/store/ledgerStore'
 import { useBillStore }      from '@/store/billStore'
 

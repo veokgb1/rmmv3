@@ -876,6 +876,14 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   type InputTab = 'manual' | 'smart' | 'ocr'
   const [activeTab, setActiveTab] = useState<InputTab>('manual')
 
+  // ── 外部 Store（⚠️ 必须在所有 useEffect 之前声明，避免 const TDZ 问题）──
+  const activeLedgerId       = useLedgerStore(s => s.activeLedgerId)
+  const currentUserId        = useAuthStore(s => s.user?.uid ?? '')
+  // 当前账套的货币（账套切换时自动响应），作为表单 currency 的默认值
+  const activeLedgerCurrency = useLedgerStore(s =>
+    s.ledgers.find(l => l.id === s.activeLedgerId)?.currency ?? 'CNY'
+  )
+
   // ── 手写表单状态 ──────────────────────────────────────────
   type TxType = 'expense' | 'income'
   const [txType,    setTxType]    = useState<TxType>('expense')
@@ -883,7 +891,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   const [category,  setCategory]  = useState<SystemCategory>('餐饮')
   const [date,      setDate]      = useState(todayStr())
   const [note,      setNote]      = useState('')
-  // 币种：可选，默认人民币，用户可在表单中切换
+  // 币种：可选，默认人民币；打开弹窗时同步为当前账套货币
   const [currency,  setCurrency]  = useState<string>('CNY')
 
   type SubmitState = 'idle' | 'saving' | 'success' | 'error'
@@ -895,7 +903,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     setCategory(txType === 'income' ? '工资' : '餐饮')
   }, [txType])
 
-  // 打开时重置所有状态，并同步当前账套的货币
+  // 打开时重置所有状态，并将 currency 同步为当前账套货币
   useEffect(() => {
     if (isOpen) {
       setActiveTab('manual')
@@ -917,13 +925,6 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
       setTimeout(() => amountRef.current?.focus(), 150)
     }
   }, [isOpen, activeTab])
-
-  const activeLedgerId  = useLedgerStore(s => s.activeLedgerId)
-  const currentUserId   = useAuthStore(s => s.user?.uid ?? '')
-  // 读取当前账套的货币，作为 currency 默认值（账套切换时同步）
-  const activeLedgerCurrency = useLedgerStore(s =>
-    s.ledgers.find(l => l.id === s.activeLedgerId)?.currency ?? 'CNY'
-  )
 
   function validate(): string | null {
     const amt = parseFloat(amountStr)

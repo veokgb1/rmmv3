@@ -172,7 +172,7 @@ export default function CategoryPieChart({
             dataKey="value"
             animationBegin={0}
             animationDuration={600}
-            onClick={(entry: CategorySlice) => handlePieClick(entry)}
+            onClick={(entry: any) => handlePieClick(entry)}
             style={onCategoryClick ? { cursor: 'pointer' } : undefined}
           >
             {data.map((entry, index) => (
