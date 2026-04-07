@@ -17,12 +17,13 @@ export type TransactionSource = 'wechat' | 'alipay' | 'manual' | 'bank' | 'ocr'
 
 /**
  * SourceType — 账单的录入方式（输入渠道）
- * csv    : 用户上传/粘贴 CSV 文件（目前主路径）
- * ocr    : 拍照/扫描手写单据，由 OCR 模型识别
- * voice  : 语音录入（未来功能）
- * manual : 用户在 UI 表单中手动填写
+ * csv       : 用户上传/粘贴 CSV 文件（目前主路径）
+ * ocr       : 拍照/扫描手写单据，由 OCR 模型识别
+ * voice     : 语音录入（未来功能）
+ * manual    : 用户在 UI 表单中手动填写
+ * V2_to_V3  : 通过前端 V2→V3 导入工具迁移的历史记录（S21）
  */
-export type SourceType = 'csv' | 'ocr' | 'voice' | 'manual'
+export type SourceType = 'csv' | 'ocr' | 'voice' | 'manual' | 'V2_to_V3'
 
 /**
  * OcrStatus — OCR 识别状态（仅当 sourceType='ocr' 时有意义）

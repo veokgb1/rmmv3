@@ -7,6 +7,7 @@ import { useAuthStore }      from '@/store/authStore'
 import { logout }            from '@/services/authService'
 import { useLedger }         from '@/hooks/useLedger'
 import LedgerManagerModal    from '@/components/ledger/LedgerManagerModal'
+import V2ImportModal         from '@/components/import/V2ImportModal'
 
 // ── 占位菜单项（未来阶段实现）─────────────────────────────────
 type SettingItem = {
@@ -19,17 +20,10 @@ type SettingItem = {
 
 const FUTURE_GROUPS: { title: string; items: SettingItem[] }[] = [
   {
-    title: '数据管理',
-    items: [
-      { icon: '🏷️', label: '分类管理',  desc: '自定义账单分类与关键词',   badge: 'SX' },
-      { icon: '📤', label: '导出数据',  desc: '导出为 CSV / Excel 文件',  badge: 'SX' },
-    ],
-  },
-  {
     title: '关于',
     items: [
       { icon: '📋', label: '使用说明',  desc: '查看功能介绍与操作指南' },
-      { icon: 'ℹ️', label: '版本信息',  desc: 'RMM V3 · 0.1.0-alpha · S17' },
+      { icon: 'ℹ️', label: '版本信息',  desc: 'RMM V3 · 0.1.0-alpha · S21' },
     ],
   },
 ]
@@ -40,7 +34,16 @@ export default function SettingsPage() {
   const { ledgers } = useLedger()
 
   const [showManager,  setShowManager]  = useState(false)
+  const [showV2Import, setShowV2Import] = useState(false)
   const [logoutLoading, setLogoutLoading] = useState(false)
+
+  // ── 轻量 Toast（仅供 V2 导入完成反馈）─────────────────────────────
+  const [settingsToast, setSettingsToast] = useState<{ msg: string; ok: boolean } | null>(null)
+  function showSettingsToast(msg: string, type?: 'success' | 'warning' | 'error') {
+    const ok = type !== 'error' && type !== 'warning'
+    setSettingsToast({ msg, ok })
+    setTimeout(() => setSettingsToast(null), 3500)
+  }
 
   // 当前用户参与的账套数
   const myLedgerCount = user
@@ -108,6 +111,19 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* ── 轻量 Toast ── */}
+      {settingsToast && (
+        <div className={`fixed top-5 left-1/2 -translate-x-1/2 z-[600]
+                         px-4 py-2.5 rounded-2xl shadow-lg
+                         text-sm font-semibold text-white
+                         flex items-center gap-2
+                         animate-[slideUp_0.2s_ease-out]
+                         ${settingsToast.ok ? 'bg-emerald-500' : 'bg-amber-500'}`}>
+          <span>{settingsToast.ok ? '✅' : '⚠️'}</span>
+          <span>{settingsToast.msg}</span>
+        </div>
+      )}
+
       {/* ── 账套管理区块 ── */}
       <div>
         <p className="text-xs font-medium text-gray-400 mb-2 px-1">账套</p>
@@ -134,6 +150,29 @@ export default function SettingsPage() {
               )}
               <span className="text-gray-300 text-sm">›</span>
             </div>
+          </button>
+
+        </div>
+      </div>
+
+      {/* ── 数据管理区块 ── */}
+      <div>
+        <p className="text-xs font-medium text-gray-400 mb-2 px-1">数据管理</p>
+        <div className="card divide-y divide-gray-50 p-0 overflow-hidden">
+
+          {/* V2 历史数据导入入口 */}
+          <button
+            onClick={() => setShowV2Import(true)}
+            className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-50 transition-colors text-left"
+          >
+            <span className="text-lg w-6 text-center">📦</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-gray-700">导入 V2 历史数据</p>
+              <p className="text-xs text-gray-400 truncate">
+                将旧版账单迁移至当前账套，进入冲突验证队列
+              </p>
+            </div>
+            <span className="text-gray-300 text-sm flex-shrink-0">›</span>
           </button>
 
         </div>
@@ -200,6 +239,13 @@ export default function SettingsPage() {
       <LedgerManagerModal
         isOpen={showManager}
         onClose={() => setShowManager(false)}
+      />
+
+      {/* ── V2ImportModal ── */}
+      <V2ImportModal
+        isOpen={showV2Import}
+        onClose={() => setShowV2Import(false)}
+        showToast={showSettingsToast}
       />
 
     </div>

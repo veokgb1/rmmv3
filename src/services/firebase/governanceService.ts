@@ -8,9 +8,11 @@
 import {
   doc, getDoc, addDoc,
   updateDoc, writeBatch,
+  getDocs, query, where,
   collection, serverTimestamp,
 } from 'firebase/firestore'
 import { db }                   from '@/config/firebase'
+import { deleteEvidence }       from '@/services/firebase/evidenceService'
 import type { Transaction }     from '@/types/Transaction.types'
 import type { VersionChangeType } from '@/types/TransactionVersion.types'
 
@@ -208,5 +210,93 @@ export async function mergeTransactions(
   console.debug(
     `[governanceService] 合并完成 keep=${keepId} remove=${removeId}` +
     ` tags合并后=${mergedTags.length}条 receipts合并后=${mergedReceipts.length}张`
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 5  凭证解绑（含历史回改规则）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * unbindEvidence — 解绑并永久删除一张凭证，执行历史回改规则
+ *
+ * 执行步骤：
+ *   1. 读取凭证文档（获取 storagePath）
+ *   2. 读取关联账单的操作前快照（写版本记录用）
+ *   3. 调用 deleteEvidence()（Storage 文件 + Firestore 凭证文档双删）
+ *   4. 统计该账单剩余凭证数量（解绑后再查，排除刚删除的那张）
+ *   5. 【历史回改规则】若剩余凭证为 0：
+ *      - 将 transaction.isVerified 回退为 false
+ *      - 效果：账单重新进入 ConflictCenter「待验证」队列，
+ *        触发条件：isMigrated && isVerified !== true → pending 冲突
+ *   6. 写入 transactionVersions 审计记录（before/after 完整快照）
+ *
+ * 设计说明：
+ *   Transaction.status 只有 expected / cleared / void 三态，
+ *   无 missing_evidence 枚举值，故通过回退 isVerified=false 实现
+ *   "凭证不完整"的语义表达，复用现有冲突检测管道，无需扩展数据模型。
+ *
+ * @param evidenceId  Firestore evidences 文档 ID
+ * @param txId        关联账单的 Firestore 文档 ID
+ * @param operatorUid 操作者 Firebase Auth UID
+ */
+export async function unbindEvidence(
+  evidenceId:  string,
+  txId:        string,
+  operatorUid: string,
+): Promise<void> {
+  // ── 步骤 1：读取凭证文档（获取 storagePath）─────────────────────
+  const evRef  = doc(db, 'evidences', evidenceId)
+  const evSnap = await getDoc(evRef)
+  if (!evSnap.exists()) throw new Error(`凭证 ${evidenceId} 不存在或已被删除`)
+  const storagePath = String(evSnap.data()['storagePath'] ?? '')
+
+  // ── 步骤 2：读取账单操作前快照 ────────────────────────────────
+  const txRef  = doc(db, 'transactions', txId)
+  const txSnap = await getDoc(txRef)
+  if (!txSnap.exists()) throw new Error(`账单 ${txId} 不存在`)
+  const txBefore = txSnap.data() as Record<string, unknown>
+  const ledgerId = String(txBefore['ledgerId'] ?? '')
+
+  // ── 步骤 3：删除凭证（Storage 文件 + Firestore 文档）──────────
+  // deleteEvidence 内部容错：Storage 文件不存在时跳过，不抛异常
+  await deleteEvidence(evidenceId, storagePath)
+
+  // ── 步骤 4：查询该账单的剩余凭证数量 ─────────────────────────
+  // 此时凭证文档已被 deleteDoc，getDocs 结果不含刚删除的那张
+  const remainingSnap = await getDocs(
+    query(
+      collection(db, 'evidences'),
+      where('transactionId', '==', txId),
+    )
+  )
+  const remainingCount = remainingSnap.size
+
+  // ── 步骤 5：历史回改规则 ─────────────────────────────────────
+  // 无剩余凭证时，将 isVerified 回退为 false：
+  //   · 使该账单重新满足"待验证"冲突条件（isMigrated && !isVerified）
+  //   · ConflictCenter 的 onSnapshot 将自动重新检测并展示该冲突
+  const txPatch: Record<string, unknown> = { updatedAt: Date.now() }
+  if (remainingCount === 0) {
+    txPatch['isVerified'] = false
+    console.debug(
+      `[governanceService] 剩余凭证为 0，回退 isVerified=false txId=${txId}`
+    )
+  }
+  await updateDoc(txRef, txPatch)
+
+  // ── 步骤 6：写版本记录（审计追踪）───────────────────────────
+  await writeVersionRecord(
+    txId,
+    ledgerId,
+    'field_update',
+    txBefore,
+    { ...txBefore, ...txPatch },
+    operatorUid,
+  )
+
+  console.debug(
+    `[governanceService] 凭证解绑完成 evId=${evidenceId} txId=${txId}` +
+    ` 剩余凭证=${remainingCount} 历史回改=${remainingCount === 0 ? '是' : '否'}`
   )
 }

@@ -2,7 +2,6 @@
 // 数据流：Firestore → onSnapshot → billStore/ledgerStore → useBills → UI
 
 import { useState, useMemo } from 'react'
-import { pushInitialData, type SyncResult } from '@/services/dbSync'
 import {
   StatCardsSkeleton,
   ChartSkeleton,
@@ -27,10 +26,6 @@ import { useBillStats } from '@/hooks/useBillStats'
 // 工具函数
 import { formatAmount }  from '@/utils/numberUtils'
 import { toChineseDate } from '@/utils/dateUtils'
-
-// Widget 组件
-import ClockWidget   from '@/widgets/ClockWidget'
-import WeatherWidget from '@/widgets/WeatherWidget'
 
 // 搜索 + 主题
 import ThemeToggle        from '@/components/ui/ThemeToggle'
@@ -136,7 +131,7 @@ function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
       {/* 描述 + 分类 + 日期 */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium text-content-primary truncate">
+          <p className="text-sm font-medium text-slate-800 truncate">
             {tx.description}
           </p>
           {/* 血缘标记：该账单是跨账套克隆副本时显示（SX 阶段完整实现） */}
@@ -154,7 +149,7 @@ function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
             </span>
           )}
         </div>
-        <p className="text-xs text-content-tertiary mt-0.5">
+        <p className="text-xs text-slate-500 mt-0.5">
           <span>{tx.category}</span>
           <span className="mx-1.5 opacity-40">·</span>
           <span>{toChineseDate(tx.date)}</span>
@@ -211,7 +206,7 @@ function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
             onClick={() => setConfirmDelete(true)}
             title="删除此账单"
             className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
-                       text-content-tertiary hover:text-red-500 hover:bg-red-50
+                       text-slate-500 hover:text-red-500 hover:bg-red-50
                        transition-all opacity-0 group-hover:opacity-100"
           >
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -225,7 +220,7 @@ function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
             onClick={() => onCorrect(tx)}
             title="纠偏分类"
             className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
-                       text-content-tertiary hover:text-primary-600 hover:bg-primary-50
+                       text-slate-500 hover:text-primary-600 hover:bg-primary-50
                        transition-all opacity-0 group-hover:opacity-100"
           >
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -237,10 +232,10 @@ function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
           {/* 金额 + 来源 */}
           <div className="text-right">
             <span className={`text-sm font-semibold tabular-nums
-              ${isIncome ? 'text-income' : 'text-content-primary'}`}>
+              ${isIncome ? 'text-income' : 'text-slate-800'}`}>
               {isIncome ? '+' : '-'}¥{formatAmount(Math.abs(tx.amount))}
             </span>
-            <p className="text-[10px] text-content-tertiary mt-0.5">
+            <p className="text-[10px] text-slate-400 mt-0.5">
               {tx.source === 'wechat'  ? '微信'   :
                tx.source === 'alipay'  ? '支付宝' :
                tx.source === 'manual'  ? '手动'   : '银行'}
@@ -287,27 +282,9 @@ function HomePage() {
   // ── 视图切换状态 ──────────────────────────────────────────
   const [activeSection, setActiveSection] = useState<'detail' | 'stats'>('detail')
 
-  // ── 云端同步状态机 ────────────────────────────────────────
-  type SyncState = 'idle' | 'loading' | 'success' | 'error'
-  const [syncState,  setSyncState]  = useState<SyncState>('idle')
-  const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
-  const [syncError,  setSyncError]  = useState<string>('')
-
-  async function handlePushData() {
-    setSyncState('loading')
-    setSyncResult(null)
-    setSyncError('')
-    try {
-      const result = await pushInitialData()
-      setSyncResult(result)
-      setSyncState('success')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setSyncError(msg)
-      setSyncState('error')
-      console.error('[HomePage·sync]', err)
-    }
-  }
+  // ── 图表折叠 / 展开所有账单 ──────────────────────────────
+  const [chartCollapsed, setChartCollapsed] = useState(true)
+  const [showAllBills,   setShowAllBills]   = useState(false)
 
   // ── 搜索状态（useSearchBills 在全月账单上做客户端过滤）───────
   const {
@@ -315,12 +292,12 @@ function HomePage() {
     filteredBills: searchedBills, isSearching, matchCount,
   } = useSearchBills(thisMonthBills)
 
-  // 账单展示优先级：搜索 > 分类筛选 > 默认最近 8 条
+  // 账单展示优先级：搜索 > 分类筛选 > 默认 8 条 / 展开全量
   const recentBills = useMemo(() => {
-    if (isSearching)      return searchedBills                                       // 搜索结果全量
+    if (isSearching)      return searchedBills
     if (selectedCategory) return thisMonthBills.filter(t => t.category === selectedCategory)
-    return thisMonthBills.slice(0, 8)                                                // 默认最近 8 条
-  }, [thisMonthBills, selectedCategory, isSearching, searchedBills])
+    return showAllBills ? thisMonthBills : thisMonthBills.slice(0, 8)
+  }, [thisMonthBills, selectedCategory, isSearching, searchedBills, showAllBills])
 
   // ── Toast 状态 ────────────────────────────────────────────
   const [toast, setToast] = useState<ToastData | null>(null)
@@ -389,60 +366,50 @@ function HomePage() {
         </div>
       </div>
 
-      {/* ══ 主横幅卡片（数据来自 useBills，账套切换时自动更新） ══ */}
-      <div className="rounded-2xl p-5 mb-4 bg-gradient-to-br from-primary-700 to-primary-500 text-white shadow-fab">
-
-        {/* 时钟 + 天气 */}
-        <div className="flex flex-col gap-3 mb-5">
-          <ClockWidget />
-          <div className="h-px bg-white/10" />
-          <WeatherWidget />
-        </div>
-
-        <div className="h-px bg-white/15 mb-4" />
-
-        {/* 净收支大数字（账套切换 → useBills → net 重算 → 此处自动刷新） */}
-        <p className="text-xs text-white/60 mb-1">
-          本月净收支
-          {/* 显示当前账套名，切换账套时此处也跟着变 */}
-          <span className="ml-2 px-2 py-0.5 bg-white/15 rounded-full text-[11px] font-medium">
-            {activeLedger?.name ?? '加载中…'}
-          </span>
-        </p>
-        <p className="text-3xl font-bold tracking-tight mb-4">
-          <span className="text-xl mr-1">{net >= 0 ? '+' : '−'}¥</span>
-          {formatAmount(Math.abs(net))}
-        </p>
-
-        {/* 收入 / 支出 */}
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <p className="text-xs text-white/60 mb-0.5">收入</p>
-            <p className="text-base font-semibold text-white/95">¥{formatAmount(income)}</p>
+      {/* ══ 主横幅卡片 ══ */}
+      <div className="rounded-2xl px-4 py-3 mb-3 bg-gradient-to-br from-primary-700 to-primary-500 text-white shadow-fab">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[11px] text-white/60 mb-0.5">
+              本月净收支
+              <span className="ml-1.5 px-1.5 py-0.5 bg-white/15 rounded-full text-[10px]">
+                {activeLedger?.name ?? '加载中…'}
+              </span>
+            </p>
+            <p className="text-2xl font-bold tracking-tight">
+              <span className="text-base mr-0.5">{net >= 0 ? '+' : '−'}¥</span>
+              {formatAmount(Math.abs(net))}
+            </p>
           </div>
-          <div className="w-px bg-white/20" />
-          <div className="flex-1">
-            <p className="text-xs text-white/60 mb-0.5">支出</p>
-            <p className="text-base font-semibold text-white/95">¥{formatAmount(expense)}</p>
+          <div className="flex gap-4 text-right">
+            <div>
+              <p className="text-[10px] text-white/60">收入</p>
+              <p className="text-sm font-semibold text-white/95">¥{formatAmount(income)}</p>
+            </div>
+            <div className="w-px bg-white/20" />
+            <div>
+              <p className="text-[10px] text-white/60">支出</p>
+              <p className="text-sm font-semibold text-white/95">¥{formatAmount(expense)}</p>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ══ 智慧看板：三核心指标卡（本月总支出 / 日均开销 / 预算剩余）══ */}
+      {/* ══ 三核心指标卡 ══ */}
       {billsReady ? (
-        <div className="grid grid-cols-3 gap-2 mb-4">
+        <div className="grid grid-cols-3 gap-2 mb-3">
 
           {/* 卡片①：本月总支出 */}
           <div className="card py-3 px-3">
             <div className="flex items-center gap-1 mb-1.5">
               <span className="text-sm">📉</span>
-              <p className="text-[10px] text-content-tertiary truncate">本月支出</p>
+              <p className="text-[10px] text-slate-500 truncate">本月支出</p>
             </div>
             <p className="text-sm font-bold text-rose-500 tabular-nums leading-tight">
               <span className="text-[10px] mr-0.5">¥</span>
               {totalExpense.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
             </p>
-            <p className="text-[10px] text-content-tertiary mt-0.5">
+            <p className="text-[10px] text-slate-500 mt-0.5">
               共 {totalCount} 笔
             </p>
           </div>
@@ -451,13 +418,13 @@ function HomePage() {
           <div className="card py-3 px-3">
             <div className="flex items-center gap-1 mb-1.5">
               <span className="text-sm">📆</span>
-              <p className="text-[10px] text-content-tertiary truncate">日均开销</p>
+              <p className="text-[10px] text-slate-500 truncate">日均开销</p>
             </div>
             <p className="text-sm font-bold text-amber-600 tabular-nums leading-tight">
               <span className="text-[10px] mr-0.5">¥</span>
               {dailyAvg.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
             </p>
-            <p className="text-[10px] text-content-tertiary mt-0.5">
+            <p className="text-[10px] text-slate-500 mt-0.5">
               已过 {daysElapsed}/{daysInMonth} 天
             </p>
           </div>
@@ -466,7 +433,7 @@ function HomePage() {
           <div className="card py-3 px-3">
             <div className="flex items-center gap-1 mb-1.5">
               <span className="text-sm">{overrun ? '⚠️' : '💰'}</span>
-              <p className="text-[10px] text-content-tertiary truncate">
+              <p className="text-[10px] text-slate-500 truncate">
                 {overrun ? '已超支' : '预算剩余'}
               </p>
             </div>
@@ -477,7 +444,7 @@ function HomePage() {
               {(overrun ? overrunAmount : budgetRemaining)
                 .toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
             </p>
-            <p className="text-[10px] text-content-tertiary mt-0.5">
+            <p className="text-[10px] text-slate-500 mt-0.5">
               预算 ¥{budget.toLocaleString()}
             </p>
           </div>
@@ -496,99 +463,28 @@ function HomePage() {
         </div>
       )}
 
-      {/* ══ 快捷操作 ══════════════════════════════════════════ */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
+      {/* ══ 快捷操作（紧凑横排）══════════════════════════════ */}
+      <div className="flex gap-2 mb-3">
         <button
           onClick={() => setImportOpen(true)}
-          className="card card-hover flex flex-col items-center py-4 gap-2 no-select"
+          className="flex-1 flex items-center justify-center gap-1.5
+                     py-2.5 rounded-xl bg-white border border-slate-100 shadow-sm
+                     hover:shadow-card-md active:scale-[0.98] transition-all no-select"
         >
-          <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center text-xl">📥</div>
-          <span className="text-sm font-medium text-content-primary">导入账单</span>
-          <span className="text-xs text-content-tertiary">微信 / 支付宝</span>
+          <span className="text-base leading-none">📥</span>
+          <span className="text-xs font-semibold text-slate-700">导入账单</span>
         </button>
         <button
           onClick={() => setOmniOpen(true)}
-          className="card card-hover flex flex-col items-center py-4 gap-2 no-select"
+          className="flex-1 flex items-center justify-center gap-1.5
+                     py-2.5 rounded-xl bg-primary-600 hover:bg-primary-700
+                     active:scale-[0.98] transition-all shadow-fab no-select"
         >
-          <div className="w-10 h-10 rounded-xl bg-income-bg flex items-center justify-center text-xl">✏️</div>
-          <span className="text-sm font-medium text-content-primary">手动记账</span>
-          <span className="text-xs text-content-tertiary">快速录入一笔</span>
+          <span className="text-base leading-none">✏️</span>
+          <span className="text-xs font-semibold text-white">手动记账</span>
         </button>
       </div>
 
-      {/* ══ S5 · 云端数据激活入口 ════════════════════════════ */}
-      <div className={`rounded-2xl border border-dashed mb-4 overflow-hidden transition-colors ${
-        syncState === 'success' ? 'border-emerald-200 bg-emerald-50' :
-        syncState === 'error'   ? 'border-red-200 bg-red-50' :
-                                  'border-primary-200 bg-white'
-      }`}>
-        <div className="flex items-center gap-3 px-4 py-3">
-          {/* 图标 */}
-          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0 transition-colors ${
-            syncState === 'success' ? 'bg-emerald-100' :
-            syncState === 'error'   ? 'bg-red-100'     :
-            syncState === 'loading' ? 'bg-amber-100'   : 'bg-primary-50'
-          }`}>
-            {syncState === 'loading' ? '⏳' :
-             syncState === 'success' ? '✅' :
-             syncState === 'error'   ? '❌' : '⚡'}
-          </div>
-
-          {/* 文字 */}
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold text-content-primary">
-              S5 · 激活云端数据
-            </p>
-            <p className="text-[11px] text-content-tertiary mt-0.5 truncate">
-              {syncState === 'loading' ? '正在写入 Firestore…请稍候' :
-               syncState === 'success' ? `${syncResult?.ledgersWritten} 账套 + ${syncResult?.transactionsWritten} 条账单已同步 · ${syncResult?.durationMs}ms` :
-               syncState === 'error'   ? '同步失败 · 查看控制台了解详情' :
-                                         '将 Mock 数据一键写入 Firestore 云端'}
-            </p>
-          </div>
-
-          {/* 按钮 */}
-          <button
-            onClick={handlePushData}
-            disabled={syncState === 'loading'}
-            className={`flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg transition-all
-              disabled:opacity-50 disabled:cursor-not-allowed ${
-              syncState === 'success' ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' :
-              syncState === 'error'   ? 'bg-red-100 text-red-700 hover:bg-red-200' :
-                                        'bg-primary-50 text-primary-700 hover:bg-primary-100'
-            }`}
-          >
-            {syncState === 'loading' ? '同步中…'  :
-             syncState === 'success' ? '再次同步' :
-             syncState === 'error'   ? '重试'     : '⚡ 激活'}
-          </button>
-        </div>
-
-        {/* 成功 Toast 展开条 */}
-        {syncState === 'success' && (
-          <div className="px-4 pb-3">
-            <div className="bg-emerald-100 rounded-xl px-3 py-2.5 text-xs text-emerald-800">
-              <p className="font-semibold mb-1">🎉 云端数据已激活！</p>
-              <p>快去 <span className="font-mono font-bold">Firebase Console → Firestore</span> 刷新看看 —</p>
-              <p className="mt-0.5 opacity-80">
-                ledgers（{syncResult?.ledgersWritten} 条）和 transactions（{syncResult?.transactionsWritten} 条）应该已出现。
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* 错误展开条 */}
-        {syncState === 'error' && syncError && (
-          <div className="px-4 pb-3">
-            <div className="bg-red-100 rounded-xl px-3 py-2 text-[11px] text-red-800 font-mono break-all">
-              {syncError.slice(0, 200)}{syncError.length > 200 ? '…' : ''}
-            </div>
-            <p className="text-[10px] text-red-500 mt-1 px-1">
-              常见原因：Firestore 安全规则未开放 / 网络问题 / 项目 ID 配置错误
-            </p>
-          </div>
-        )}
-      </div>
 
       {/* ══ 明细 / 统计 主 Tab 栏 ════════════════════════════ */}
       <div className="flex items-center gap-1.5 mb-4 p-1
@@ -597,8 +493,8 @@ function HomePage() {
           onClick={() => setActiveSection('detail')}
           className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
             activeSection === 'detail'
-              ? 'bg-white text-content-primary shadow-sm'
-              : 'text-content-tertiary hover:text-content-secondary'
+              ? 'bg-white text-slate-800 shadow-sm'
+              : 'text-slate-500 hover:text-slate-600'
           }`}
         >
           📋 账单明细
@@ -607,8 +503,8 @@ function HomePage() {
           onClick={() => setActiveSection('stats')}
           className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
             activeSection === 'stats'
-              ? 'bg-white text-content-primary shadow-sm'
-              : 'text-content-tertiary hover:text-content-secondary'
+              ? 'bg-white text-slate-800 shadow-sm'
+              : 'text-slate-500 hover:text-slate-600'
           }`}
         >
           📊 统计看板
@@ -654,8 +550,8 @@ function HomePage() {
           {/* ③ 月度收支趋势图 */}
           <div className="card">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-content-primary">月度收支趋势</h2>
-              <span className="text-[11px] text-content-tertiary px-2 py-0.5
+              <h2 className="text-sm font-semibold text-slate-800">月度收支趋势</h2>
+              <span className="text-[11px] text-slate-500 px-2 py-0.5
                                bg-surface-overlay rounded-full">最近 6 个月</span>
             </div>
             {/* allLedgerBills：跨月全量 + 已按 activeLedgerId 隔离 */}
@@ -665,8 +561,8 @@ function HomePage() {
           {/* ④ 分类支出排行榜 */}
           <div className="card">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-content-primary">支出碎钞机 Top 5</h2>
-              <span className="text-[11px] text-content-tertiary">本月 · 相对排名</span>
+              <h2 className="text-sm font-semibold text-slate-800">支出碎钞机 Top 5</h2>
+              <span className="text-[11px] text-slate-500">本月 · 相对排名</span>
             </div>
             {/* thisMonthBills：本月 + 已按 activeLedgerId 隔离 */}
             <ExpenseRankingList
@@ -679,12 +575,12 @@ function HomePage() {
           {/* ⑤ 消费分类环形图 */}
           <div className="card">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="text-sm font-semibold text-content-primary">支出分类占比</h2>
+              <h2 className="text-sm font-semibold text-slate-800">支出分类占比</h2>
               <span className="text-[11px] text-primary-500 font-medium">
                 {activeLedger?.name ?? '—'}
               </span>
             </div>
-            <p className="text-xs text-content-tertiary mb-3">
+            <p className="text-xs text-slate-500 mb-3">
               本月支出合计 · 排除转账类别
             </p>
             <CategoryPieChart bills={thisMonthBills} />
@@ -697,8 +593,8 @@ function HomePage() {
                 📅
               </div>
               <div className="flex-1">
-                <p className="text-xs font-semibold text-content-primary">预支出管理</p>
-                <p className="text-[11px] text-content-tertiary mt-0.5">
+                <p className="text-xs font-semibold text-slate-800">预支出管理</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
                   待发生账单 · 垫资报销追踪 · 自定义预算设置
                 </p>
               </div>
@@ -716,101 +612,31 @@ function HomePage() {
       {/* ══ 账单明细视图 ══════════════════════════════════════ */}
       {activeSection === 'detail' && (
         <>
-          {/* 已结清/预支出 子 Tab */}
-          <div className="flex items-center gap-2 mb-4">
-            <button className="flex-1 py-2 text-xs font-semibold rounded-xl
-                               bg-primary-600 text-white shadow-sm">
-              ✅ 已结清
-            </button>
-            <button
-              disabled
-              className="flex-1 py-2 text-xs font-medium rounded-xl
-                         bg-surface-overlay text-content-tertiary
-                         opacity-60 cursor-not-allowed"
-              title="预支出管理 · 开发中"
-            >
-              <span>📅 预支出</span>
-              <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5
-                               bg-amber-100 text-amber-600 text-[10px] font-bold
-                               rounded-full leading-none">
-                🚧 S9
-              </span>
-            </button>
-          </div>
-
-          {/* 纠偏演示入口条 */}
-          <div className="flex items-center justify-between px-3.5 py-2.5 mb-4
-                          bg-amber-50 rounded-xl border border-amber-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-base flex-shrink-0">
-                🔄
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-amber-800">补录纠偏 · 溯及既往</p>
-                <p className="text-[11px] text-amber-500 mt-0.5">S7 核心功能 · 支持三种修改策略</p>
-              </div>
-            </div>
-            <button
-              onClick={() => {
-                const first = thisMonthBills[0]
-                if (first) {
-                  setCorrectionCtx({
-                    tx:       first,
-                    field:    '分类',
-                    oldValue: first.category,
-                    newValue: first.category === '未分类' ? '餐饮' : '未分类',
-                  })
-                }
-                setCorrectionOpen(true)
-              }}
-              className="text-xs font-bold text-amber-700 bg-amber-100 hover:bg-amber-200
-                         px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
-            >
-              演示弹窗 ›
-            </button>
-          </div>
-
-          {/* ── 智慧看板：消费分类环形图（可点击联动下方账单列表）── */}
-          {!billsReady && <ChartSkeleton height="h-44" />}
+          {/* ── 消费分类图（细条折叠栏，默认收起）── */}
           {billsReady && categorySlices.length > 0 && (
-            <div className="card mb-4">
-              <div className="flex items-center justify-between mb-1">
-                <h2 className="text-sm font-semibold text-content-primary">本月消费分布</h2>
-                <span className="text-[11px] text-content-tertiary">点击扇区筛选账单</span>
-              </div>
-
-              {/* 环形饼图（ResponsiveContainer 保证移动端自适应） */}
-              <CategoryPieChart
-                bills={thisMonthBills}
-                onCategoryClick={setSelectedCategory}
-                selectedCategory={selectedCategory}
-              />
-
-              {/* ── 趋势分析文字 ───────────────────────────────── */}
-              <div className={`mt-3 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed ${
-                projectedExpense > budget
-                  ? 'bg-rose-50 text-rose-700'
-                  : 'bg-emerald-50 text-emerald-700'
-              }`}>
-                <span className="font-semibold">趋势分析：</span>
-                按目前日均 <span className="font-bold tabular-nums">
-                  ¥{dailyAvg.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
-                </span> 的速度，
-                本月预计支出 <span className="font-bold tabular-nums">
-                  ¥{projectedExpense.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
+            <div className="mb-3">
+              {/* 折叠触发条 — 极小占位 */}
+              <button
+                onClick={() => setChartCollapsed(v => !v)}
+                className="w-full flex items-center justify-between
+                           px-3 py-2 bg-white rounded-xl border border-slate-100 shadow-sm
+                           hover:bg-slate-50 transition-colors"
+              >
+                <span className="text-xs font-medium text-slate-600">📊 本月消费分布</span>
+                <span className="text-[11px] text-primary-600 font-semibold">
+                  {chartCollapsed ? '展开 ›' : '收起 ‹'}
                 </span>
-                {projectedExpense > budget ? (
-                  <>，将<span className="font-bold">超出预算</span>{' '}
-                  <span className="font-bold tabular-nums">
-                    ¥{(projectedExpense - budget).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
-                  </span>，建议控制{categorySlices[0]?.name ?? ''}等支出。</>
-                ) : (
-                  <>，预算充裕，预计剩余{' '}
-                  <span className="font-bold tabular-nums">
-                    ¥{(budget - projectedExpense).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
-                  </span>。</>
-                )}
-              </div>
+              </button>
+              {/* 展开后才渲染图表，完全不占空间 */}
+              {!chartCollapsed && (
+                <div className="card mt-1 pt-3">
+                  <CategoryPieChart
+                    bills={thisMonthBills}
+                    onCategoryClick={setSelectedCategory}
+                    selectedCategory={selectedCategory}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -833,13 +659,18 @@ function HomePage() {
           {/* 最近账单列表 */}
           {billsReady && <div className="card">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="text-sm font-semibold text-content-primary">
+              <h2 className="text-sm font-semibold text-slate-800">
                 {isSearching      ? `搜索「${searchQuery}」`          :
                  selectedCategory ? `「${selectedCategory}」账单`     : '最近账单'}
               </h2>
-              <button className="text-xs text-primary-600 font-medium">查看全部 ›</button>
+              <button
+                onClick={() => { setShowAllBills(true); setSelectedCategory(null) }}
+                className="text-xs text-primary-600 font-medium hover:underline"
+              >
+                查看全部 ›
+              </button>
             </div>
-            <p className="text-xs text-content-tertiary mb-3">
+            <p className="text-xs text-slate-500 mb-3">
               {isSearching
                 ? `找到 ${matchCount} 条匹配记录`
                 : selectedCategory
@@ -864,12 +695,12 @@ function HomePage() {
               ) : (
                 <div className="py-10 text-center">
                   <p className="text-3xl mb-2">{isSearching ? '🔍' : '📋'}</p>
-                  <p className="text-sm text-content-tertiary">
+                  <p className="text-sm text-slate-500">
                     {isSearching
                       ? `未找到含「${searchQuery}」的账单`
                       : `「${activeLedger?.name}」本月暂无账单`}
                   </p>
-                  <p className="text-xs text-content-tertiary mt-1 opacity-70">
+                  <p className="text-xs text-slate-500 mt-1 opacity-70">
                     {isSearching ? '试试其他关键词' : '导入账单或手动记账后显示'}
                   </p>
                 </div>
@@ -877,11 +708,25 @@ function HomePage() {
             </div>
 
             {/* 无分类筛选时才展示"还有 X 条"提示 */}
-            {!selectedCategory && totalCount > 8 && (
-              <button className="w-full mt-3 py-2.5 text-xs text-content-tertiary
-                                 bg-surface-overlay rounded-lg text-center hover:bg-gray-100
-                                 transition-colors">
-                还有 {totalCount - 8} 条记录，点击查看全部 ›
+            {!selectedCategory && !showAllBills && totalCount > 8 && (
+              <button
+                onClick={() => setShowAllBills(true)}
+                className="w-full mt-3 py-2.5 text-xs text-primary-600 font-medium
+                           bg-primary-50 rounded-lg text-center hover:bg-primary-100
+                           transition-colors"
+              >
+                还有 {totalCount - 8} 条记录，点击展开全部 ›
+              </button>
+            )}
+            {/* 展开全量时显示收起按钮 */}
+            {showAllBills && totalCount > 8 && (
+              <button
+                onClick={() => setShowAllBills(false)}
+                className="w-full mt-3 py-2.5 text-xs text-slate-500
+                           bg-surface-overlay rounded-lg text-center hover:bg-gray-100
+                           transition-colors"
+              >
+                收起 ‹
               </button>
             )}
           </div>}

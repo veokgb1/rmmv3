@@ -176,7 +176,7 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
       {/* 金额（大字醒目） */}
       <div className="relative">
         <span className="absolute left-3 top-1/2 -translate-y-1/2
-                         text-lg font-bold text-content-tertiary">-¥</span>
+                         text-lg font-bold text-slate-400">-¥</span>
         <input
           type="number"
           min="0"
@@ -184,9 +184,8 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
           value={item.amount}
           onChange={e => onChange(item._id, 'amount', parseFloat(e.target.value) || 0)}
           className="w-full pl-10 pr-4 py-2.5 text-xl font-bold tabular-nums
-                     bg-gray-50 rounded-xl border-2 border-transparent
-                     focus:border-primary-300 focus:bg-white outline-none transition-all
-                     text-content-primary"
+                     bg-slate-100 text-slate-900 rounded-xl border-2 border-transparent
+                     focus:border-primary-300 focus:bg-white outline-none transition-all"
         />
       </div>
 
@@ -194,7 +193,7 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
       <select
         value={item.category}
         onChange={e => onChange(item._id, 'category', e.target.value)}
-        className="w-full px-3 py-2 bg-gray-50 rounded-xl text-sm text-content-primary
+        className="w-full px-3 py-2 bg-slate-100 text-slate-900 rounded-xl text-sm
                    border-2 border-transparent focus:border-primary-300 focus:bg-white
                    outline-none transition-all"
       >
@@ -203,26 +202,26 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
         ))}
       </select>
 
-      {/* 日期 + 备注（两列并排） */}
+      {/* 日期 + 说明（两列并排） */}
       <div className="grid grid-cols-2 gap-2">
         <input
           type="date"
           value={item.date}
           onChange={e => onChange(item._id, 'date', e.target.value)}
-          className="px-3 py-2 bg-gray-50 rounded-xl text-xs text-content-primary
+          className="px-3 py-2 bg-slate-100 text-slate-900 rounded-xl text-xs
                      border-2 border-transparent focus:border-primary-300
                      focus:bg-white outline-none transition-all"
         />
         <input
           type="text"
           value={item.notes}
-          placeholder="备注"
+          placeholder="说明"
           maxLength={30}
           onChange={e => onChange(item._id, 'notes', e.target.value)}
-          className="px-3 py-2 bg-gray-50 rounded-xl text-xs text-content-primary
+          className="px-3 py-2 bg-slate-100 text-slate-900 rounded-xl text-xs
                      border-2 border-transparent focus:border-primary-300
                      focus:bg-white outline-none transition-all
-                     placeholder:text-gray-300"
+                     placeholder:text-slate-400"
         />
       </div>
 
@@ -453,10 +452,10 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
               onChange={e => setInputText(e.target.value)}
               placeholder={`粘贴或输入消费记录，支持多笔…\n\n例如：\n昨天打车35，中午外卖28.5\n下午买了杯奶茶20，书费150`}
               rows={6}
-              className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-sm text-content-primary
+              className="w-full px-4 py-3 bg-slate-100 text-slate-900 rounded-2xl text-sm
                          border-2 border-transparent focus:border-primary-300 focus:bg-white
                          outline-none transition-all resize-none leading-relaxed
-                         placeholder:text-gray-300"
+                         placeholder:text-slate-400"
             />
             <span className="absolute bottom-3 right-3 text-[10px] text-content-tertiary">
               {inputText.length} 字
@@ -883,6 +882,10 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   const activeLedgerCurrency = useLedgerStore(s =>
     s.ledgers.find(l => l.id === s.activeLedgerId)?.currency ?? 'CNY'
   )
+  // 当前账套中文名称（显示用，避免暴露内部 ID）
+  const activeLedgerName = useLedgerStore(s =>
+    s.ledgers.find(l => l.id === s.activeLedgerId)?.name ?? s.activeLedgerId
+  )
 
   // ── 手写表单状态 ──────────────────────────────────────────
   type TxType = 'expense' | 'income'
@@ -898,14 +901,31 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   const [submitState, setSubmitState] = useState<SubmitState>('idle')
   const [errorMsg,    setErrorMsg]    = useState('')
 
+  // ── OCR 回填标志（防止 txType effect 在 OCR 填表后覆盖 AI 识别的分类）──
+  const ocrFillingRef = useRef(false)
+
   // 收入/支出切换时重置分类
+  // 例外：OCR 刚刚回填时（ocrFillingRef=true），跳过重置，保留 AI 识别分类
   useEffect(() => {
+    if (ocrFillingRef.current) { ocrFillingRef.current = false; return }
     setCategory(txType === 'income' ? '工资' : '餐饮')
   }, [txType])
 
-  // 打开时重置所有状态，并将 currency 同步为当前账套货币
+  // ── activeLedgerCurrency 的 ref 镜像 ──────────────────────────
+  // 通过 ref 读取最新货币值，避免将其加入 useEffect 依赖数组，
+  // 防止 Firestore ledger 快照导致的 OCR 期间表单被清空（Bug A-2 修复）
+  const activeLedgerCurrencyRef = useRef(activeLedgerCurrency)
+  activeLedgerCurrencyRef.current = activeLedgerCurrency
+
+  // ── 追踪 isOpen 跳变（false→true）──────────────────────────
+  // 确保只在 Modal 首次打开时重置表单，
+  // 而非每次 activeLedgerCurrency 变化时都重置（导致 OCR 结果被清空）
+  const prevIsOpenRef = useRef(false)
+
+  // 打开时重置所有状态（仅在 isOpen 从 false 跳变为 true 时触发一次）
+  // 依赖数组有意只写 [isOpen]，activeLedgerCurrency 通过 ref 读取
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevIsOpenRef.current) {
       setActiveTab('manual')
       setTxType('expense')
       setAmountStr('')
@@ -914,9 +934,10 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
       setNote('')
       setSubmitState('idle')
       setErrorMsg('')
-      setCurrency(activeLedgerCurrency)  // 用账套货币初始化
+      setCurrency(activeLedgerCurrencyRef.current)  // 通过 ref 读取，不作为依赖
     }
-  }, [isOpen, activeLedgerCurrency])
+    prevIsOpenRef.current = isOpen
+  }, [isOpen])  // 有意排除 activeLedgerCurrency，详见上方注释
 
   // 金额框自动聚焦
   const amountRef = useRef<HTMLInputElement>(null)
@@ -930,6 +951,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     const amt = parseFloat(amountStr)
     if (!amountStr || isNaN(amt) || amt <= 0) return '金额不能为空且必须大于 0'
     if (!date) return '请选择日期'
+    if (!note.trim()) return '请填写说明（如：星巴克拿铁）'
     return null
   }
 
@@ -947,16 +969,21 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     }
     try {
       await addTransaction(data)
+      showToast?.('✅ 入账成功！账单正在更新…', 'success')
       setSubmitState('success')
-      setTimeout(() => onClose(), 600)
+      setTimeout(() => onClose(), 800)
     } catch (e) {
-      setErrorMsg((e instanceof Error ? e.message : String(e)).slice(0, 120))
+      const errMsg = (e instanceof Error ? e.message : String(e)).slice(0, 120)
+      console.error('[OmniInputModal] addTransaction 失败:', errMsg)
+      setErrorMsg(errMsg)
       setSubmitState('error')
     }
   }
 
   // OCR 识别结果回填手写 Tab
+  // 在设置 txType 之前先标记 ocrFillingRef，防止 txType effect 覆盖 AI 分类
   function handleOcrFill(amount: number, cat: SystemCategory, d: string, notes: string) {
+    ocrFillingRef.current = true
     setAmountStr(String(Math.abs(amount)))
     setCategory(cat); setDate(d); setNote(notes)
     setTxType('expense'); setSubmitState('idle'); setErrorMsg('')
@@ -968,35 +995,33 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   const categories = txType === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
 
   return (
-    <>
-      {/* ══════════════════════════════════════════════════════
-          居中 Modal — 遮罩层（点击空白关闭）
-          fixed inset-0 + flex items-center justify-center
-          遮罩单独一层，Modal 本体绝对居中
-      ══════════════════════════════════════════════════════ */}
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center
-                   bg-black/50 backdrop-blur-[2px]"
-        onClick={onClose}
-      />
+    // ══════════════════════════════════════════════════════
+    // 统一遮罩容器（Bug A-1 修复）：
+    //   · z-[500] 确保高于所有 S21 全局浮层（EvidenceUploader z-300 / Unbinding z-400）
+    //   · 单容器架构消除两个兄弟 fixed div 之间的 pointer-events 事件捕获歧义
+    //   · 点击外层（遮罩） → onClose；点击内层 Modal → stopPropagation 阻断
+    // ══════════════════════════════════════════════════════
+    <div
+      className="fixed inset-0 z-[500] flex items-center justify-center"
+      onClick={onClose}
+    >
+      {/* 遮罩背景（absolute，处于 Modal 本体之下）*/}
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" />
 
-      {/* ══════════════════════════════════════════════════════
-          Modal 本体 — 三段式 Flex 根容器
-          宽度  ：w-[95%] sm:max-w-lg，三 Tab 切换宽度绝对稳定
-          高度  ：max-h-[90dvh]，内容自动撑开，极限截断 dvh
-          圆角  ：rounded-2xl（全局圆角，非贴底半圆）
-          内部不设 overflow-y-auto — 滚动由各 Tab Body 区独立管理
-      ══════════════════════════════════════════════════════ */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center
-                      pointer-events-none">
-        <div
-          className="w-[95%] sm:max-w-lg
-                     bg-white rounded-2xl shadow-xl
-                     max-h-[90dvh] flex flex-col overflow-hidden
-                     pointer-events-auto
-                     animate-[slideUp_0.25s_ease-out]"
-          onClick={e => e.stopPropagation()}
-        >
+      {/* Modal 本体 — 三段式 Flex 根容器
+          · relative：确保在 absolute 遮罩层之上，事件不再穿透到遮罩
+          · 宽度  ：w-[95%] sm:max-w-lg，三 Tab 切换宽度绝对稳定
+          · 高度  ：max-h-[90dvh]，内容自动撑开，极限截断 dvh
+          · 圆角  ：rounded-2xl（全局圆角，非贴底半圆）
+          · 内部不设 overflow-y-auto — 滚动由各 Tab Body 区独立管理
+      */}
+      <div
+        className="relative w-[95%] sm:max-w-lg
+                   bg-white rounded-2xl shadow-xl
+                   max-h-[90dvh] flex flex-col overflow-hidden
+                   animate-[slideUp_0.25s_ease-out]"
+        onClick={e => e.stopPropagation()}
+      >
 
         {/* ══ ① Header：标题行 + Tab 切换栏（固定不滚动）══ */}
         <div className="flex-shrink-0 pt-4">
@@ -1084,18 +1109,21 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                 {/* 金额 */}
                 <div className="relative">
                   {/* 货币符号随 currency 状态动态更新 */}
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-content-tertiary">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-slate-400">
                     {txType === 'income' ? '+' : '-'}{getCurrencySymbol(currency)}
                   </span>
                   <input
                     ref={amountRef}
-                    type="number" min="0" step="0.01" placeholder="0.00"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0.00"
                     value={amountStr}
                     onChange={e => { setAmountStr(e.target.value); setErrorMsg('') }}
-                    className="w-full pl-14 pr-4 py-4 text-3xl font-bold tabular-nums bg-gray-50
+                    className="w-full pl-14 pr-4 py-4 text-3xl font-bold tabular-nums
+                               bg-slate-100 text-slate-900
                                rounded-2xl border-2 border-transparent focus:border-primary-300
-                               focus:bg-white outline-none transition-all text-content-primary
-                               placeholder:text-gray-300"
+                               focus:bg-white outline-none transition-all
+                               placeholder:text-slate-300"
                   />
                 </div>
 
@@ -1119,25 +1147,25 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
 
                 {/* 日期 */}
                 <div>
-                  <p className="text-xs font-semibold text-content-secondary mb-2">日期</p>
+                  <p className="text-xs font-semibold text-slate-600 mb-2">日期</p>
                   <input
                     type="date" value={date}
                     onChange={e => setDate(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm text-content-primary
+                    className="w-full px-4 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
                                border-2 border-transparent focus:border-primary-300 focus:bg-white
                                outline-none transition-all"
                   />
                 </div>
 
-                {/* 备注 */}
+                {/* 说明（主要事项） */}
                 <div>
-                  <p className="text-xs font-semibold text-content-secondary mb-2">备注（选填）</p>
+                  <p className="text-xs font-semibold text-slate-600 mb-2">说明 <span className="text-rose-400">*</span></p>
                   <input
-                    type="text" placeholder={`${category}消费`} value={note} maxLength={50}
+                    type="text" placeholder={`请输入说明，如「星巴克拿铁」`} value={note} maxLength={50}
                     onChange={e => setNote(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-gray-50 rounded-xl text-sm text-content-primary
+                    className="w-full px-4 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
                                border-2 border-transparent focus:border-primary-300 focus:bg-white
-                               outline-none transition-all placeholder:text-gray-300"
+                               outline-none transition-all placeholder:text-slate-400"
                   />
                 </div>
 
@@ -1165,7 +1193,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                 <div className="flex items-center gap-1.5 px-3 py-2 bg-primary-50 rounded-xl">
                   <span className="text-xs">🗂️</span>
                   <p className="text-xs text-primary-700">
-                    将记入账套：<span className="font-semibold ml-1">{activeLedgerId}</span>
+                    将记入账套：<span className="font-semibold ml-1">{activeLedgerName}</span>
                   </p>
                 </div>
 
@@ -1189,10 +1217,17 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                     submitState === 'error'   ? 'bg-red-500 text-white' :
                     'bg-primary-600 text-white hover:bg-primary-700 active:scale-[0.98] shadow-fab'}`}
                 >
-                  {submitState === 'saving'  ? '⏳ 正在写入云端…'        :
-                   submitState === 'success' ? '✅ 已保存！看板正在更新…' :
-                   submitState === 'error'   ? '❌ 保存失败，点击重试'    :
-                   '💾 保存记账'}
+                  {submitState === 'saving' ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                      </svg>
+                      正在入账…
+                    </span>
+                  ) : submitState === 'success' ? '✅ 入账成功！'
+                    : submitState === 'error'   ? '❌ 失败，点击重试'
+                    : '💾 保存记账'}
                 </button>
               </div>
             </>
@@ -1216,8 +1251,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
           )}
 
         </div>
-        </div>{/* Modal 本体结束 */}
-      </div>{/* 居中定位层结束 */}
-    </>
+      </div>{/* Modal 本体结束 */}
+    </div>
   )
 }

@@ -10,16 +10,19 @@
 import { useEffect }          from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 
-import HomePage     from '@/pages/HomePage'
-import QueryPage    from '@/pages/QueryPage'
-import ReportPage   from '@/pages/ReportPage'
-import SettingsPage from '@/pages/SettingsPage'
-import LoginPage    from '@/pages/LoginPage'
-import BottomNav    from '@/components/layout/BottomNav'
+import HomePage      from '@/pages/HomePage'
+import QueryPage     from '@/pages/QueryPage'
+import ReportPage    from '@/pages/ReportPage'
+import SettingsPage  from '@/pages/SettingsPage'
+import GovernancePage from '@/pages/GovernancePage'
+import LoginPage     from '@/pages/LoginPage'
+import BottomNav     from '@/components/layout/BottomNav'
 
 import { useFirestoreSync }               from '@/hooks/useFirestoreSync'
 import { useAuthStore, startAuthListener } from '@/store/authStore'
 import EjectionBlocker                    from '@/components/ledger/EjectionBlocker'
+import EvidenceUploaderModal             from '@/components/evidence/EvidenceUploaderModal'
+import UnbindingModal                   from '@/modals/UnbindingModal'
 
 // ── 全局 Loading 骨架 ──────────────────────────────────────────
 function GlobalLoadingScreen() {
@@ -47,11 +50,12 @@ function MainApp() {
         <main className="flex-1 pb-16 overflow-y-auto">
           <Routes>
             <Route path="/"         element={<Navigate to="/home" replace />} />
-            <Route path="/home"     element={<HomePage />} />
-            <Route path="/query"    element={<QueryPage />} />
-            <Route path="/report"   element={<ReportPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*"         element={<Navigate to="/home" replace />} />
+            <Route path="/home"       element={<HomePage />} />
+            <Route path="/query"      element={<QueryPage />} />
+            <Route path="/report"     element={<ReportPage />} />
+            <Route path="/governance" element={<GovernancePage />} />
+            <Route path="/settings"   element={<SettingsPage />} />
+            <Route path="*"           element={<Navigate to="/home" replace />} />
           </Routes>
         </main>
         <BottomNav />
@@ -59,6 +63,10 @@ function MainApp() {
 
       {/* S18：越权阻断层 — 全局单例，挂在路由树之外保证任何页面都能触发 */}
       <EjectionBlocker />
+      {/* S21：凭证上传模态框 — 全局单例，governanceStore 驱动开关 */}
+      <EvidenceUploaderModal />
+      {/* S21：解绑确认弹窗 — 全局单例，z-[400] 高于上传框 z-[300] */}
+      <UnbindingModal />
     </BrowserRouter>
   )
 }

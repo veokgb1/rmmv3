@@ -208,11 +208,16 @@ function parseGeminiJson(
   errorHint:  string,   // 错误提示中指引用户的操作（如"重新拍照"/"重新录音"）
 ): ReceiptAnalysisResult {
 
-  // 清洗 Markdown 代码块（防御性）
-  const cleaned = rawText
+  // 清洗步骤 1：去除 Markdown 代码块
+  let cleaned = rawText
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '')
     .trim()
+
+  // 清洗步骤 2：Gemini 2.5 Flash 有时在 JSON 前输出思考链文本
+  // 从文本中提取第一个完整的 { ... } 对象块
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+  if (jsonMatch) cleaned = jsonMatch[0]
 
   // 解析 JSON
   let parsed: Record<string, unknown>
@@ -237,17 +242,29 @@ function parseGeminiJson(
     '餐饮','交通','购物','娱乐','医疗','居住','教育',
     '工资','副业收入','理财收益','转账','未分类',
   ]
-  const rawCategory = String(parsed.category ?? '未分类')
+  const rawCategory = String(parsed.category ?? '')
   const category: SystemCategory = VALID_CATEGORIES.includes(rawCategory as SystemCategory)
     ? (rawCategory as SystemCategory)
     : '未分类'
+  if (!VALID_CATEGORIES.includes(rawCategory as SystemCategory)) {
+    console.error(`[aiService] 分类 fallback：Gemini 返回 "${rawCategory}"，不在白名单，已替换为"未分类"`)
+  }
 
   // 日期：校验格式，fallback 到今天
   const rawDate  = String(parsed.date ?? '')
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : todayStr()
+  const today    = todayStr()
+  const date     = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : today
+  if (rawDate && !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    console.error(`[aiService] 日期 fallback：Gemini 返回 "${rawDate}"，格式不符 YYYY-MM-DD，已替换为 ${today}`)
+  }
 
-  const notes = String(parsed.notes ?? '').slice(0, 50) || category
+  const rawNotes = String(parsed.notes ?? '').slice(0, 50)
+  if (!rawNotes) {
+    console.warn(`[aiService] 说明字段为空，已 fallback 到分类名 "${category}"`)
+  }
+  const notes = rawNotes || category
 
+  console.info('[aiService] 解析结果：', { amount, category, date, notes })
   return { amount, category, date, notes }
 }
 
@@ -385,11 +402,15 @@ export async function parseNaturalLanguageBatch(
     throw new Error(`AI 服务暂时不可用：${msg.slice(0, 80)}`)
   }
 
-  // ── 清洗 Markdown 代码块
-  const cleaned = rawText
+  // ── 清洗步骤 1：去除 Markdown 代码块
+  let cleaned = rawText
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '')
     .trim()
+
+  // ── 清洗步骤 2：从文本中提取第一个 [...] 数组块（处理思考链前缀）
+  const arrMatch = cleaned.match(/\[[\s\S]*\]/)
+  if (arrMatch) cleaned = arrMatch[0]
 
   // ── 解析 JSON 数组
   let parsed: unknown[]
