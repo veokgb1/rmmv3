@@ -58,25 +58,53 @@ function BottomNav() {
         <NavLink
           key={path}
           to={path}
-          // NavLink 的 className 支持传入函数，isActive 是 react-router-dom 注入的激活状态
           className={({ isActive }) =>
             [
-              'flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors',
+              'flex-1 flex flex-col items-center justify-center transition-colors relative',
               isActive
-                ? 'text-primary-600'   // 当前激活路由：使用主色调
-                : 'text-gray-400 hover:text-gray-600', // 非激活：灰色
+                ? 'text-primary-600'
+                : 'text-gray-400 hover:text-gray-500',
             ].join(' ')
           }
         >
-          {/* 导航图标（带冲突红点徽章）*/}
-          <span className="relative text-lg leading-none">
-            {icon}
-            {showBadge && (
-              <span className="absolute -top-0.5 -right-1 w-2 h-2 rounded-full bg-red-500" />
-            )}
-          </span>
-          {/* 导航文字标签 */}
-          <span className="text-[10px] font-medium">{label}</span>
+          {({ isActive }) => (
+            <>
+              {/* 激活指示线（顶部细条）*/}
+              {isActive && (
+                <span className="absolute top-0 left-1/2 -translate-x-1/2
+                                 w-8 h-0.5 rounded-full bg-primary-500" />
+              )}
+
+              {/* 图标容器：激活时背景药丸 */}
+              <span className={[
+                'relative flex items-center justify-center rounded-xl transition-all',
+                isActive
+                  ? 'bg-primary-50 px-3 py-0.5 -mt-0.5'
+                  : 'px-3 py-0.5',
+              ].join(' ')}>
+                <span className={[
+                  'leading-none transition-all',
+                  isActive ? 'text-xl' : 'text-lg',
+                ].join(' ')}>
+                  {icon}
+                </span>
+                {/* 红点徽章 */}
+                {showBadge && (
+                  <span className="absolute -top-0.5 -right-0 w-2 h-2 rounded-full bg-red-500" />
+                )}
+              </span>
+
+              {/* 导航文字标签 */}
+              <span className={[
+                'transition-all leading-none mt-0.5',
+                isActive
+                  ? 'text-[11px] font-bold text-primary-600'
+                  : 'text-[10px] font-medium text-gray-400',
+              ].join(' ')}>
+                {label}
+              </span>
+            </>
+          )}
         </NavLink>
       ))}
 

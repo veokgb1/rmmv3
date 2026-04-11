@@ -38,9 +38,9 @@
     --color-primary-bg:   #f0fdf9;
 
     /* 收入 / 支出语义色 */
-    --color-income:    #16a34a;
-    --color-income-bg: #f0fdf4;
-    --color-expense:   #dc2626;
+    --color-income:    #3b82f6;   /* 蓝色：收入 */
+    --color-income-bg: #eff6ff;
+    --color-expense:   #ef4444;   /* 红色：支出 */
     --color-expense-bg:#fff1f2;
   }
 
@@ -60,9 +60,9 @@
     --color-primary:      #14b8a6;
     --color-primary-bg:   #134e4a;
 
-    --color-income:    #4ade80;
-    --color-income-bg: #052e16;
-    --color-expense:   #f87171;
+    --color-income:    #60a5fa;   /* 蓝色亮版：深色模式收入 */
+    --color-income-bg: #1e3a5f;
+    --color-expense:   #f87171;   /* 红色亮版：深色模式支出 */
     --color-expense-bg:#450a0a;
   }
 

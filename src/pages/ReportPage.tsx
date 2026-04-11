@@ -15,58 +15,33 @@ import StatCards          from '@/components/statistics/StatCards'
 import MonthlyBarChart    from '@/components/statistics/MonthlyBarChart'
 import CategoryPieChart   from '@/components/statistics/CategoryPieChart'
 import ExpenseRankingList from '@/components/statistics/ExpenseRankingList'
-
-// ── 月份工具函数 ────────────────────────────────────────────────
-
-interface MonthOption {
-  key:   string   // YYYY-MM
-  label: string   // 展示文字，如"4月"；本月加 "(本月)"
-}
-
-/** 生成最近 N 个月的月份选项，最新在前 */
-function buildMonthOptions(n = 6): MonthOption[] {
-  const options: MonthOption[] = []
-  const now = new Date()
-  const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-
-  for (let i = 0; i < n; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    const shortLabel = `${d.getMonth() + 1}月`
-    options.push({
-      key,
-      label: key === thisMonthKey ? `${shortLabel} · 本月` : shortLabel,
-    })
-  }
-  return options   // 最新在前（index 0 = 本月）
-}
+import {
+  TimeFilter,
+  makeTimeFilterValue,
+  type TimeFilterValue,
+} from '@/components/ui/TimeFilter'
 
 // ── 主组件 ─────────────────────────────────────────────────────
 
 function ReportPage() {
-  // 月份选项列表（常量，不依赖账套）
-  const monthOptions = useMemo(() => buildMonthOptions(6), [])
+  const [timeFilter, setTimeFilter] = useState<TimeFilterValue>(
+    makeTimeFilterValue('this')
+  )
 
-  // 当前选中的月份（默认本月）
-  const [selectedMonth, setSelectedMonth] = useState<string>(monthOptions[0].key)
-
-  // 账套货币（传给 StatCards / ExpenseRankingList）
-  const activeLedger = useLedgerStore(s => s.ledgers.find(l => l.id === s.activeLedgerId))
-  const currency     = activeLedger?.currency ?? 'CNY'
-
-  // 账单数据（全量 + ready 状态）
+  const activeLedger   = useLedgerStore(s => s.ledgers.find(l => l.id === s.activeLedgerId))
+  const currency       = activeLedger?.currency ?? 'CNY'
   const allLedgerBills = useBillStore(s => s._allTransactions)
   const billsReady     = useBillStore(s => s.billsReady)
 
-  // 当前选中月份的账单（StatCards / PieChart / RankingList 使用）
-  const selectedMonthBills = useMemo(() =>
-    allLedgerBills.filter(
-      tx => tx.status !== 'void' && tx.date.startsWith(selectedMonth)
-    ),
-    [allLedgerBills, selectedMonth]
-  )
+  const selectedMonthBills = useMemo(() => {
+    const { dateFrom, dateTo } = timeFilter
+    return allLedgerBills.filter(tx => {
+      if (tx.status === 'void') return false
+      if (!dateFrom) return true
+      return tx.date >= dateFrom && tx.date <= (dateTo ?? '9999-99-99')
+    })
+  }, [allLedgerBills, timeFilter])
 
-  // 所选月份的收支汇总（StatCards props）
   const { income, expense, net } = useMemo(() => {
     let inc = 0, exp = 0
     selectedMonthBills.forEach(tx => {
@@ -79,29 +54,12 @@ function ReportPage() {
   return (
     <div className="p-4 space-y-4 pb-6">
 
-      {/* ── 标题 ──────────────────────────────────────────────── */}
       <div className="pt-2">
-        <h1 className="text-xl font-bold text-gray-900">财务报表</h1>
-        <p className="text-xs text-gray-400 mt-1">可视化收支结构与趋势</p>
+        <h1 className="text-xl font-bold text-content-primary">财务报表</h1>
+        <p className="text-xs text-content-tertiary mt-1">可视化收支结构与趋势</p>
       </div>
 
-      {/* ── 月份切换器 ─────────────────────────────────────────── */}
-      <div className="flex gap-1 overflow-x-auto pb-0.5 scrollbar-none">
-        {monthOptions.map(opt => (
-          <button
-            key={opt.key}
-            onClick={() => setSelectedMonth(opt.key)}
-            className={`flex-shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-medium
-                        transition-colors whitespace-nowrap ${
-              selectedMonth === opt.key
-                ? 'bg-gray-900 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+      <TimeFilter value={timeFilter} onChange={setTimeFilter} />
 
       {/* ── 骨架屏（数据未就绪） ──────────────────────────────── */}
       {!billsReady && (
@@ -138,8 +96,8 @@ function ReportPage() {
           {/* ③ 本月支出分类占比饼图 */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
             <p className="text-sm font-semibold text-gray-800 mb-0.5">支出分类占比</p>
-            <p className="text-xs text-gray-400 mb-3">
-              {monthOptions.find(o => o.key === selectedMonth)?.label ?? selectedMonth} 各类别支出比例
+            <p className="text-xs text-content-tertiary mb-3">
+              {timeFilter.label} 各类别支出比例
             </p>
             <CategoryPieChart bills={selectedMonthBills} />
           </div>

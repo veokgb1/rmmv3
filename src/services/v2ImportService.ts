@@ -1,11 +1,13 @@
-// v2ImportService — V2 历史数据前端导入引擎 (S21)
+// v2ImportService — V2 历史数据前端导入引擎 (S21 深度重构版)
 //
 // 职责：
 //   1. parseV2JSON         — 解析 V2 JSON 数组，提取有效记录
 //   2. mapV2RecordToV3     — 单条 V2 记录 → V3 Transaction（垃圾袋隔离策略）
 //   3. batchImportV2       — 批量写入 Firestore（writeBatch，499条/批）
-//                           返回 txDocIds — 与 records 平行的 docId 数组，供凭证绑定
+//                           接受任意 ParsedV2Record 子集（支持分批导入）
+//                           返回 txDocIds — 与入参 records 严格平行的 docId 数组
 //   4. importV2Evidences   — 从 V2 voucherPaths/imageUrl 字段拉取图片并上传到 V3
+//                           接受与 batchImportV2 相同的子集 + 平行的 txDocIds
 //   5. deleteV2Records     — 精准清场：仅删 sourceType='V2_to_V3' 的记录和关联凭证
 //
 // 垃圾袋隔离策略（核心设计）：
@@ -14,10 +16,15 @@
 //     rawData.legacy_backup — 对 V3 主数据层完全透明，不污染任何字段
 //   · rawData._migratedFromV2 = true → ConflictCenter 自动检测为"待验证"冲突
 //   · rawData._importedViaUI = true  → 区分脚本迁移与前端 UI 导入
+//
+// 子集支持说明（分批导入关键）：
+//   batchImportV2(subset, ledgerId, userId, ...) → txDocIds 与 subset 平行
+//   importV2Evidences(subset, txDocIds, ...)     → txDocIds 来自上一步，严格平行
+//   调用方（V2ImportModal）负责维护原始大数组下标到子集下标的映射
 
 import {
   collection, doc, writeBatch, serverTimestamp,
-  query, where, getDocs,
+  query, where, getDocs, addDoc, updateDoc, arrayUnion,
 } from 'firebase/firestore'
 import { db }          from '@/config/firebase'
 import type { Transaction } from '@/types/Transaction.types'
@@ -108,17 +115,21 @@ function extractCategory(record: Record<string, unknown>): SystemCategory {
 
 /** 尝试从 V2 记录中提取描述/备注 */
 function extractDescription(record: Record<string, unknown>): string {
+  // v3-final-import format: _stitched.description is the canonical processed description
+  const stitched = record['_stitched'] as Record<string, unknown> | undefined
   const raw =
-    record['description'] ??
-    record['memo']        ??
-    record['remark']      ??
-    record['note']        ??
-    record['title']       ??
-    record['name']        ??
-    record['merchant']    ??
+    (stitched?.['description'])   ??   // stitch-data.ts processed result (highest priority)
+    record['summary']             ??   // v2 source field (e.g. "转给德济四楼护工史阿姨2月份护工费")
+    record['description']         ??
+    record['memo']                ??
+    record['remark']              ??
+    record['note']                ??
+    record['title']               ??
+    record['name']                ??
+    record['merchant']            ??
     record['counterpart']
 
-  return raw ? String(raw).slice(0, 100) : ''
+  return raw ? String(raw).slice(0, 200) : ''
 }
 
 /** 判断是否为收入（显式标记优先，正数金额 + 无标记 → 支出）*/
@@ -162,16 +173,32 @@ export interface V2ParseResult {
 }
 
 // ════════════════════════════════════════════════════════════════
-// § 3  解析 V2 JSON
+// § 2b  v3-final-import.json 内嵌凭证结构
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * StitchedVoucher — stitch-data.ts 输出的凭证结构
+ * 已存储于 Firebase Storage，无需再下载/上传
+ */
+export interface StitchedVoucher {
+  storageUrl:  string
+  storagePath: string
+  fileName:    string
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 3  解析 V2 JSON（含 v3-final-import.json 自动识别）
 // ════════════════════════════════════════════════════════════════
 
 /**
  * parseV2JSON — 解析 V2 导出 JSON，提取有效记录
  *
  * 接受格式：
- *   · JSON 数组直接输入：[{...}, {...}]
- *   · 带外层包装：{ "data": [...] } / { "records": [...] } / { "transactions": [...] }
- *   · 数组中每个元素只要有 date 或 amount 字段即视为有效记录
+ *   · v3-final-import.json（stitch-data.ts 输出）：
+ *     { _format: 'v3-final-import', transactions: [...] }
+ *     → 每条记录含 v3Vouchers，直接缝合入 _raw，零 CORS 下载
+ *   · 原始 V2 JSON 数组：[{...}, {...}]
+ *   · 带外层包装：{ data/records/transactions/bills: [...] }
  *
  * 无效记录（金额为 0 或日期无法解析）→ 计入 skipCount，不导入
  */
@@ -208,6 +235,16 @@ export function parseV2JSON(jsonText: string): V2ParseResult {
     return { records: [], skipCount: 0, errors: ['数组为空，没有可导入的记录'] }
   }
 
+  // ── 判断是否为 v3-final-import 格式 ─────────────────────
+  const isFinalImport =
+    raw &&
+    typeof raw === 'object' &&
+    (raw as Record<string, unknown>)['_format'] === 'v3-final-import'
+
+  if (isFinalImport) {
+    console.info('[v2ImportService] 检测到 v3-final-import 格式，启用直写凭证通道')
+  }
+
   // ── 逐条解析 ─────────────────────────────────────────────
   for (let i = 0; i < arr.length; i++) {
     const item = arr[i]
@@ -217,21 +254,36 @@ export function parseV2JSON(jsonText: string): V2ParseResult {
     }
 
     const rec = item as Record<string, unknown>
-    const amount = extractAmount(rec)
 
-    if (amount === 0) {
+    // v3-final-import 格式：优先使用 _stitched 预处理结果
+    let amountFinal:      number
+    let isIncomeFinal:    boolean
+
+    if (isFinalImport && rec['_stitched']) {
+      // 使用 stitch-data.ts 已处理好的带符号金额
+      const stitched = rec['_stitched'] as Record<string, unknown>
+      amountFinal   = typeof stitched['amount_v3'] === 'number'
+        ? Math.abs(stitched['amount_v3'] as number)
+        : extractAmount(rec)
+      isIncomeFinal = typeof stitched['amount_v3'] === 'number'
+        ? (stitched['amount_v3'] as number) > 0
+        : extractIsIncome(rec)
+    } else {
+      amountFinal   = extractAmount(rec)
+      isIncomeFinal = extractIsIncome(rec)
+    }
+
+    if (amountFinal === 0) {
       skipCount++
       continue
     }
 
-    const isIncome = extractIsIncome(rec)
-
     records.push({
       date:        extractDate(rec),
-      amount:      isIncome ? amount : -amount,
+      amount:      isIncomeFinal ? amountFinal : -amountFinal,
       category:    extractCategory(rec),
       description: extractDescription(rec),
-      _raw:        rec,
+      _raw:        rec,   // v3Vouchers / _legacyRowNum 原样保留在 _raw 中
     })
   }
 
@@ -239,7 +291,10 @@ export function parseV2JSON(jsonText: string): V2ParseResult {
     errors.push(`所有 ${skipCount} 条记录的金额均为 0 或格式无效，无可导入数据`)
   }
 
-  console.info(`[v2ImportService] parseV2JSON 完成 — 有效: ${records.length}, 跳过: ${skipCount}`)
+  console.info(
+    `[v2ImportService] parseV2JSON 完成 — 有效: ${records.length}, 跳过: ${skipCount}` +
+    (isFinalImport ? ' [v3-final-import 模式]' : '')
+  )
   return { records, skipCount, errors }
 }
 
@@ -247,6 +302,10 @@ export function parseV2JSON(jsonText: string): V2ParseResult {
 // § 4  垃圾袋映射：单条 V2 记录 → V3 Transaction
 // ════════════════════════════════════════════════════════════════
 
+/**
+ * V3_CORE_FIELD_KEYS — 白名单：这些字段被提取为 V3 核心字段
+ * 所有不在此集合中的 V2 字段将被打包进 rawData.legacy_backup
+ */
 const V3_CORE_FIELD_KEYS = new Set([
   'date', 'transactionDate', 'billDate', 'createTime', 'tradeTime', 'time',
   'amount', 'money', 'fee', 'price', 'sum', 'totalAmount', 'tradeAmount',
@@ -259,12 +318,28 @@ export function mapV2RecordToV3(
   ledgerId: string,
   userId:   string,
 ): Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> {
+  // 垃圾袋：把所有非核心 V2 字段（含 voucherPaths、imageUrl 等）打包隔离
   const legacyBackup: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(parsed._raw)) {
     if (!V3_CORE_FIELD_KEYS.has(key)) {
       legacyBackup[key] = value
     }
   }
+
+  // ── v3-final-import 内嵌凭证：直接写入 receiptUrls ────────
+  // _raw.v3Vouchers 由 stitch-data.ts 注入，含 Firebase Storage URL
+  // 无需任何网络下载，直接赋值
+  const stitchedVouchers = parsed._raw['v3Vouchers'] as StitchedVoucher[] | undefined
+  const receiptUrls: string[] = stitchedVouchers && stitchedVouchers.length > 0
+    ? stitchedVouchers.map(v => v.storageUrl).filter(Boolean)
+    : []
+
+  // ── 状态策略：初始状态必须是 pending（经治理中心入账后才进入 cleared）
+  // 这样首页不会直接显示，需要通过治理中心 forceAdd 审核
+  // status='expected' 在语义上不匹配，直接用自定义字段 isVerified=false 驱动 pending 冲突
+  // status 写 'cleared' 但 isVerified=false → detectConflicts 识别为 'pending' 冲突
+  // 治理中心 forceAdd 会将 isVerified 设为 true，账单从冲突队列退出，正常显示
+  // （此行为与之前 import-to-firestore.ts 的逻辑完全一致，经验证可用）
 
   return {
     ledgerId,
@@ -275,17 +350,19 @@ export function mapV2RecordToV3(
     description: parsed.description || parsed.category,
     source:      'manual',
     sourceType:  'V2_to_V3',
-    status:      'cleared',
+    status:      'cleared',     // cleared 但 isVerified=false → pending 冲突队列
     tags:        [],
     accountId:   'acc-v2-migrated',
     isManuallyEdited: false,
-    isVerified:  false,
+    isVerified:  false,         // false → detectConflicts 标记为 'pending'，首页不直接显示
     isDuplicate: false,
+    receiptUrls: receiptUrls.length > 0 ? receiptUrls : undefined,
     rawData: {
-      _migratedFromV2: true,
-      _importedViaUI:  true,
-      _importedAt:     Date.now(),
-      legacy_backup:   legacyBackup,
+      _migratedFromV2:  true,
+      _importedViaUI:   true,
+      _importedAt:      Date.now(),
+      _legacyRowNum:    parsed._raw['_legacyRowNum'],   // 保留行号，凭证直写时查找用
+      legacy_backup:    legacyBackup,
     },
   }
 }
@@ -297,12 +374,25 @@ export function mapV2RecordToV3(
 export interface ImportResult {
   imported:  number
   errors:    string[]
-  /** 与 records 平行的 Firestore doc ID 数组（commit 失败的批次对应 ID 为空字符串）*/
+  /**
+   * 与入参 records 严格平行的 Firestore doc ID 数组
+   * · commit 成功：对应位置为真实 docId（非空字符串）
+   * · commit 失败或映射错误：对应位置为空字符串 ''
+   *
+   * 调用方（V2ImportModal）用此数组：
+   *   1. 传给 importV2Evidences 实现凭证精准绑定
+   *   2. 判断哪些记录成功，以精准扣减待导入队列
+   */
   txDocIds:  string[]
 }
 
 /**
- * batchImportV2 — 将解析后的 V2 记录批量写入 Firestore transactions 集合
+ * batchImportV2 — 将解析后的 V2 记录（或其子集）批量写入 Firestore transactions 集合
+ *
+ * 子集支持：
+ *   · records 可以是 parseV2JSON 返回数组的任意子集
+ *   · 返回的 txDocIds 严格与入参 records 平行（长度相同，下标对应）
+ *   · 调用方负责记录原始大数组下标 → 本次子集下标的映射
  *
  * 关键设计：
  *   · 每条记录预先调用 doc(txCol) 客户端生成 docId（commit 前即确定，无需二次查询）
@@ -315,9 +405,21 @@ export async function batchImportV2(
   userId:     string,
   onProgress: (imported: number, total: number) => void,
 ): Promise<ImportResult> {
-  const BATCH_SIZE = 499
+  // Firestore writeBatch 上限 500，每批 transaction 最多 200 条
+  // 为凭证 addDoc 留出空间（最多 10 张/条 × 200 = 2000，但 addDoc 不走 batch，不受限）
+  const BATCH_SIZE = 200
   const errors:   string[] = []
   const txDocIds: string[] = new Array(records.length).fill('')
+
+  // 判断是否为 v3-final-import（含内嵌凭证，无需后续单独跑 importV2Evidences）
+  const hasFinalImportVouchers = records.some(r =>
+    Array.isArray(r._raw['v3Vouchers']) &&
+    (r._raw['v3Vouchers'] as unknown[]).length > 0
+  )
+
+  if (hasFinalImportVouchers) {
+    console.info('[v2ImportService] 检测到内嵌 v3Vouchers，凭证将随账单一并写入 Firestore（0 次网络 I/O）')
+  }
 
   console.info(`[v2ImportService] 开始文字批量导入 — 共 ${records.length} 条，目标账套: ${ledgerId}`)
 
@@ -325,22 +427,34 @@ export async function batchImportV2(
     const chunk  = records.slice(i, i + BATCH_SIZE)
     const batch  = writeBatch(db)
     const txCol  = collection(db, 'transactions')
-    const chunkRefs: Array<{ index: number; id: string }> = []
+    const evCol  = collection(db, 'evidences')
+
+    // 记录每条的 {原始下标, docRef, stitchedVouchers}，commit 后写 docIds 和 evidences
+    const chunkMeta: Array<{
+      index:    number
+      id:       string
+      vouchers: StitchedVoucher[]
+    }> = []
 
     for (let j = 0; j < chunk.length; j++) {
       const parsed = chunk[j]
       try {
-        const mapped = mapV2RecordToV3(parsed, ledgerId, userId)
-        const newRef = doc(txCol)   // 客户端预生成 ID，commit 前即确定
+        const mapped  = mapV2RecordToV3(parsed, ledgerId, userId)
+        const newRef  = doc(txCol)   // 客户端预生成 ID
         batch.set(newRef, {
           ...mapped,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         })
-        chunkRefs.push({ index: i + j, id: newRef.id })
+
+        // 收集内嵌凭证（v3-final-import 格式），commit 后写 evidences
+        const vouchers = (parsed._raw['v3Vouchers'] as StitchedVoucher[] | undefined) ?? []
+        chunkMeta.push({ index: i + j, id: newRef.id, vouchers })
+
         console.info(
           `[v2ImportService] 预写 #${i + j}: ${parsed.date}` +
           ` ¥${Math.abs(parsed.amount).toFixed(2)} ${parsed.category}` +
+          ` ${vouchers.length > 0 ? `📎${vouchers.length}张` : ''}` +
           ` → docId: ${newRef.id}`,
         )
       } catch (e) {
@@ -349,11 +463,51 @@ export async function batchImportV2(
     }
 
     try {
+      // ── 提交 transactions batch ──────────────────────────────
       await batch.commit()
-      console.info(`[v2ImportService] 第 ${Math.floor(i / BATCH_SIZE) + 1} 批提交成功 — ${chunkRefs.length} 条`)
-      for (const { index, id } of chunkRefs) {
+      console.info(`[v2ImportService] 第 ${Math.floor(i / BATCH_SIZE) + 1} 批提交成功 — ${chunkMeta.length} 条`)
+
+      for (const { index, id } of chunkMeta) {
         txDocIds[index] = id
       }
+
+      // ── 写入内嵌凭证的 evidences 文档（并发，不阻塞下一批）──
+      if (hasFinalImportVouchers) {
+        const MIME_MAP: Record<string, string> = {
+          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+          gif: 'image/gif',  webp: 'image/webp', pdf: 'application/pdf',
+          heic: 'image/heic', heif: 'image/heif',
+        }
+        const evTasks = chunkMeta.flatMap(({ id: txId, vouchers }) =>
+          vouchers.map(v => {
+            const ext      = v.fileName.split('.').pop()?.toLowerCase() ?? 'jpg'
+            const fileType = MIME_MAP[ext] ?? 'image/jpeg'
+            return addDoc(evCol, {
+              transactionId: txId,
+              ledgerId,
+              uploadedBy:    userId,
+              fileName:      v.fileName,
+              storageUrl:    v.storageUrl,
+              storagePath:   v.storagePath,
+              fileType,
+              fileSizeBytes: 0,
+              uploadedAt:    Date.now(),
+              status:        'ok' as const,
+            }).catch(e => {
+              // 凭证写入失败不阻断账单，记录警告
+              console.warn(`[v2ImportService] evidences 写入失败 txId=${txId}:`, e)
+            })
+          })
+        )
+        // 并发执行，等待全部完成
+        await Promise.all(evTasks)
+
+        const evCount = chunkMeta.reduce((s, m) => s + m.vouchers.length, 0)
+        if (evCount > 0) {
+          console.info(`[v2ImportService] 凭证直写完成 — ${evCount} 张 evidences 文档已写入`)
+        }
+      }
+
       onProgress(Math.min(i + chunk.length, records.length), records.length)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Firestore 批量写入失败'
@@ -371,17 +525,64 @@ export async function batchImportV2(
 // § 6  凭证导入：从 V2 voucherPaths/imageUrl 拉取图片并上传至 V3
 // ════════════════════════════════════════════════════════════════
 
-/** V2 中可能存放图片 URL 的字段名列表 */
+/** V2 中可能存放图片 URL 的字段名列表（12 种变体，覆盖已知 V2 版本）*/
 const EVIDENCE_URL_FIELDS = [
-  'voucherPaths', 'vouchers', 'attachments',
-  'imageUrls',    'imageUrl',  'imagePath',
-  'receiptUrls',  'receiptUrl', 'receiptPath',
-  'photoUrls',    'photoUrl',  'photos',
+  'voucherPaths', 'vouchers',    'attachments',
+  'imageUrls',    'imageUrl',    'imagePath',
+  'receiptUrls',  'receiptUrl',  'receiptPath',
+  'photoUrls',    'photoUrl',    'photos',
 ] as const
 
-/** 从 V2 原始记录中提取所有 HTTP 图片 URL（去重）*/
+/**
+ * V2 中可能存放 Google Drive File ID 的字段名列表
+ * 值为纯 ID 字符串（如 "1gf2vnRUjKKI9Rey..."），而非完整 URL
+ * 需要经 gdriveIdToUrl() 转换后方可访问
+ */
+const GDRIVE_ID_FIELDS = [
+  'voucherIds',    'voucherId',
+  'driveIds',      'driveId',
+  'fileIds',       'fileId',
+  'attachmentIds', 'attachmentId',
+] as const
+
+/**
+ * gdriveIdToUrl — 将 Google Drive File ID 转换为标准直链 URL
+ *
+ * 转换格式：https://drive.google.com/uc?export=view&id={ID}
+ * 该 URL 本身受 CORS 限制，fetch 前须经 wrapWithCorsProxy() 包装
+ */
+function gdriveIdToUrl(id: string): string {
+  const clean = id.trim()
+  if (!clean) return ''
+  return `https://drive.google.com/uc?export=view&id=${clean}`
+}
+
+/**
+ * isGdriveUrl — 判断一个 URL 是否来自 Google Drive
+ * 用于决定是否需要 CORS 代理中转
+ */
+function isGdriveUrl(url: string): boolean {
+  return url.includes('drive.google.com') || url.includes('docs.google.com')
+}
+
+/**
+ * wrapWithCorsProxy — 对 Google Drive URL 套一层公共 CORS 代理
+ *
+ * 代理服务：corsproxy.io（免费公共代理，无需 API Key）
+ * 原理：浏览器→代理服务器（无 CORS 限制）→ Google Drive → 返回字节流给浏览器
+ *
+ * 仅对 Google Drive URL 生效；其他 URL 原样返回，避免不必要的中转延迟
+ */
+function wrapWithCorsProxy(url: string): string {
+  if (!isGdriveUrl(url)) return url
+  return `https://corsproxy.io/?${encodeURIComponent(url)}`
+}
+
+/** 从 V2 原始记录中提取所有图片 URL（URL 字段 + Google Drive ID 字段，去重）*/
 function extractEvidenceUrls(raw: Record<string, unknown>): string[] {
   const urls: string[] = []
+
+  // ── 处理直接 URL 类字段（http 开头的字符串或字符串数组）─────
   for (const field of EVIDENCE_URL_FIELDS) {
     const val = raw[field]
     if (!val) continue
@@ -393,6 +594,24 @@ function extractEvidenceUrls(raw: Record<string, unknown>): string[] {
       urls.push(val)
     }
   }
+
+  // ── 处理 Google Drive File ID 字段（转换为直链 URL）─────────
+  for (const field of GDRIVE_ID_FIELDS) {
+    const val = raw[field]
+    if (!val) continue
+    if (Array.isArray(val)) {
+      for (const v of val) {
+        if (typeof v === 'string') {
+          const url = gdriveIdToUrl(v)
+          if (url) urls.push(url)
+        }
+      }
+    } else if (typeof val === 'string') {
+      const url = gdriveIdToUrl(val)
+      if (url) urls.push(url)
+    }
+  }
+
   return [...new Set(urls)]
 }
 
@@ -402,8 +621,27 @@ export interface EvidenceImportResult {
   errors:   string[]
 }
 
+/** Firebase Storage 凭证对象（来自 Node.js 迁移脚本 v3-migrated.json）*/
+export interface V3VoucherObject {
+  legacyDriveId: string
+  legacyRowNum:  number
+  storageUrl:    string
+  storagePath:   string
+  fileName:      string
+}
+
+/**
+ * MigratedMap — _legacyRowNum → V3VoucherObject[] 快速查找表
+ * 由 V2ImportModal 解析 v3-migrated.json 后构建，传给 importV2EvidencesFromMigrated
+ */
+export type MigratedMap = Map<number, V3VoucherObject[]>
+
 /**
  * importV2Evidences — 从 V2 凭证字段拉取图片并上传至 V3 Storage/evidences 集合
+ *
+ * 子集支持：
+ *   · records 和 txDocIds 是同一次 batchImportV2 的入参和返回值（严格平行）
+ *   · 可以是 parseV2JSON 返回数组的任意子集，无需传入完整大数组
  *
  * 绑定逻辑（精确）：
  *   · records[i] 对应的 Transaction docId 为 txDocIds[i]
@@ -414,9 +652,6 @@ export interface EvidenceImportResult {
  *   · 本地路径（非 http 开头）→ 跳过（浏览器无法访问）
  *   · fetch 失败（403/404/CORS）→ 记入 skipped，不中断整体流程
  *   · txDocIds[i] 为空（对应 Transaction 写入失败）→ 跳过该记录的凭证
- *
- * @param records   ParsedV2Record 数组（与 txDocIds 平行）
- * @param txDocIds  batchImportV2 返回的 docId 数组
  */
 export async function importV2Evidences(
   records:     ParsedV2Record[],
@@ -450,10 +685,20 @@ export async function importV2Evidences(
 
   for (const { txId, url, label } of tasks) {
     try {
-      // 拉取远端图片
-      const resp = await fetch(url, { mode: 'cors' })
+      // Google Drive URL 须经 CORS 代理中转，其他 URL 直接拉取
+      const fetchUrl = wrapWithCorsProxy(url)
+      const isProxied = fetchUrl !== url
+
+      if (isProxied) {
+        console.info(`[v2ImportService] 使用 CORS 代理 — ${label}: ${url.slice(0, 60)}…`)
+      }
+
+      const resp = await fetch(fetchUrl, { mode: 'cors' })
       if (!resp.ok) {
-        console.warn(`[v2ImportService] 凭证拉取失败 (${resp.status}) — ${label}: ${url.slice(0, 60)}…`)
+        console.warn(
+          `[v2ImportService] 凭证拉取失败 (${resp.status})` +
+          `${isProxied ? ' [via proxy]' : ''} — ${label}: ${url.slice(0, 60)}…`
+        )
         skipped++
         onProgress?.(uploaded + skipped, total)
         continue
@@ -477,6 +722,121 @@ export async function importV2Evidences(
   }
 
   console.info(`[v2ImportService] 凭证导入完成 — 上传: ${uploaded}, 跳过: ${skipped}, 失败: ${errors.length}`)
+  return { uploaded, skipped, errors }
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 6b 凭证直写（不下载不上传）：从 v3-migrated.json 预迁移索引写入 Firestore
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * importV2EvidencesFromMigrated — 直接写入 Firestore evidences，无需任何网络下载/上传
+ *
+ * 适用场景：
+ *   已通过 scripts/migration/migrate-drive-to-firebase.ts 将 Google Drive 凭证
+ *   预先搬迁至 Firebase Storage，并生成了 v3-migrated.json（含 storageUrl/storagePath）
+ *
+ * 工作流程：
+ *   1. 通过 records[i]._raw._legacyRowNum 在 migratedMap 中查找对应凭证列表
+ *   2. 每张凭证调用 addDoc 直接写入 Firestore evidences 集合（0 次网络 I/O）
+ *   3. 批量 updateDoc 同步 Transaction.receiptUrls 字段，防止 ConflictCenter no_evidence 误报
+ *
+ * @param records     ParsedV2Record 子集（与 batchImportV2 同一批次）
+ * @param txDocIds    batchImportV2 返回的严格平行 docId 数组
+ * @param migratedMap _legacyRowNum → V3VoucherObject[] 查找表
+ * @param ledgerId    目标账套 ID
+ * @param userId      操作用户 UID
+ * @param onProgress  进度回调
+ */
+export async function importV2EvidencesFromMigrated(
+  records:     ParsedV2Record[],
+  txDocIds:    string[],
+  migratedMap: MigratedMap,
+  ledgerId:    string,
+  userId:      string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<EvidenceImportResult> {
+  let uploaded = 0
+  let skipped  = 0
+  const errors: string[] = []
+
+  // 构建任务列表
+  const tasks: Array<{ txId: string; voucher: V3VoucherObject; label: string }> = []
+  for (let i = 0; i < records.length; i++) {
+    const txId = txDocIds[i]
+    if (!txId) continue
+    const legacyRowNum = records[i]._raw['_legacyRowNum'] as number | undefined
+    if (legacyRowNum == null) continue
+    const vouchers = migratedMap.get(legacyRowNum) ?? []
+    for (const voucher of vouchers) {
+      tasks.push({ txId, voucher, label: `Row#${legacyRowNum} ${records[i].date}` })
+    }
+  }
+
+  const total = tasks.length
+  if (total === 0) {
+    console.info('[v2ImportService] migratedMap 无匹配凭证（_legacyRowNum 均未命中），跳过直写')
+    return { uploaded: 0, skipped: 0, errors: [] }
+  }
+
+  console.info(`[v2ImportService] 开始凭证直写 — ${total} 张（无网络下载，直接写 Firestore）`)
+
+  // MIME 类型推断表
+  const MIME_MAP: Record<string, string> = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+    gif: 'image/gif',  webp: 'image/webp', pdf: 'application/pdf',
+    heic: 'image/heic', heif: 'image/heif',
+  }
+
+  // 按 txId 分组，用于后续批量 updateDoc receiptUrls
+  const txUrlGroups = new Map<string, string[]>()
+
+  for (const { txId, voucher, label } of tasks) {
+    try {
+      const ext      = voucher.fileName.split('.').pop()?.toLowerCase() ?? 'jpg'
+      const fileType = MIME_MAP[ext] ?? 'image/jpeg'
+
+      await addDoc(collection(db, 'evidences'), {
+        transactionId: txId,
+        ledgerId,
+        uploadedBy:    userId,
+        fileName:      voucher.fileName,
+        storageUrl:    voucher.storageUrl,
+        storagePath:   voucher.storagePath,
+        fileType,
+        fileSizeBytes: 0,          // 迁移文件无法获取原始大小，用 0 占位
+        uploadedAt:    Date.now(),
+        status:        'ok' as const,
+      })
+
+      // 收集此 txId 的 storageUrl，稍后批量写入 receiptUrls
+      if (!txUrlGroups.has(txId)) txUrlGroups.set(txId, [])
+      txUrlGroups.get(txId)!.push(voucher.storageUrl)
+
+      uploaded++
+      console.info(`[v2ImportService] 凭证直写 ✓ — ${label} → ${voucher.fileName}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '未知错误'
+      errors.push(`${label}: ${msg}`)
+      skipped++
+      console.warn(`[v2ImportService] 凭证直写 ✗ — ${label}: ${msg}`)
+    }
+    onProgress?.(uploaded + skipped, total)
+  }
+
+  // 批量更新 Transaction.receiptUrls（arrayUnion 保证去重，防止 no_evidence 冲突误报）
+  const txCol = collection(db, 'transactions')
+  for (const [txId, urls] of txUrlGroups) {
+    try {
+      await updateDoc(doc(txCol, txId), { receiptUrls: arrayUnion(...urls) })
+      console.info(`[v2ImportService] receiptUrls 已更新 txId=${txId} (+${urls.length} 张)`)
+    } catch (e) {
+      console.warn(`[v2ImportService] receiptUrls 更新失败 txId=${txId}:`, e)
+      // 非致命错误，不写入 errors
+    }
+  }
+
+  console.info(`[v2ImportService] 凭证直写完成 — 成功: ${uploaded}, 失败: ${skipped}`)
   return { uploaded, skipped, errors }
 }
 

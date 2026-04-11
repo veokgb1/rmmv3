@@ -6,13 +6,34 @@
 // ════════════════════════════════════════════════════════════════
 
 /**
- * EvidenceStatus — 凭证当前状态
- * ok        : 文件已成功上传并可访问
- * missing   : 引用存在但文件在 Storage 中不可访问（迁移残留）
- * uploading : 正在上传中（前端临时状态，不持久化）
- * error     : 上传失败或文件损坏
+ * EvidenceStatus — 凭证当前状态机
+ *
+ * ┌──────────────┐  上传完成（从未关联）   ┌─────────────┐
+ * │ uploading    │ ───────────────────────→ │ unprocessed │  Pool A（待处理收件箱）
+ * └──────────────┘                          └─────────────┘
+ *                                                 │ attachEvidenceUrl
+ *                                                 ▼
+ * ok        : 已关联到账单，文件可访问          ┌──────┐
+ * missing   : 引用存在但 Storage 文件不可访问   │  ok  │
+ * uploading : 上传中（前端临时态，不持久化）    └──────┘
+ * error     : 上传失败或文件损坏                  │ softUnbindEvidence
+ * unprocessed: 新上传但尚未关联任何账单(Pool A)   ▼
+ * orphan    : 曾关联账单，被用户主动解绑(Pool B) ┌────────┐
+ * replaced  : 曾关联账单，账单合并后被替换(Pool B)│ orphan │
+ *                                               │replaced│
+ *                                               └────────┘
+ *                                                 │ hardDeleteEvidence（仅凭证池 UI）
+ *                                                 ▼
+ *                                              [已删除]
  */
-export type EvidenceStatus = 'ok' | 'missing' | 'uploading' | 'error'
+export type EvidenceStatus =
+  | 'ok'
+  | 'missing'
+  | 'uploading'
+  | 'error'
+  | 'unprocessed'
+  | 'orphan'
+  | 'replaced'
 
 // ════════════════════════════════════════════════════════════════
 // § 2  凭证记录
@@ -54,6 +75,19 @@ export interface Evidence {
 
   /** 凭证状态 */
   status: EvidenceStatus
+
+  /**
+   * 软解绑时间戳（毫秒）
+   * 仅 orphan / replaced 状态有值，记录从账单解绑的时刻
+   */
+  orphanedAt?: number
+
+  /**
+   * 原始关联账单 ID
+   * 软解绑后保留，用于凭证池追踪"此凭证来自哪张账单"
+   * 仅 orphan / replaced 状态有值
+   */
+  originalTxId?: string
 
   /** 可选备注（如：原始单据编号、备注说明）*/
   note?: string

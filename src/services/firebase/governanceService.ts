@@ -12,7 +12,7 @@ import {
   collection, serverTimestamp,
 } from 'firebase/firestore'
 import { db }                   from '@/config/firebase'
-import { deleteEvidence }       from '@/services/firebase/evidenceService'
+import { softUnbindEvidence }   from '@/services/firebase/evidenceService'
 import type { Transaction }     from '@/types/Transaction.types'
 import type { VersionChangeType } from '@/types/TransactionVersion.types'
 
@@ -54,11 +54,29 @@ async function writeVersionRecord(
 // § 2  强制入账
 // ════════════════════════════════════════════════════════════════
 
+// ── 迁移状态枚举 ─────────────────────────────────────────────
+// V2_COMPLETE  : 文字 + 物理凭证均完整，处于合规状态
+// V2_TEXT_ONLY : 仅有文字占位，无物理凭证，属于"待补救件"
+export type MigrationStatus = 'V2_COMPLETE' | 'V2_TEXT_ONLY'
+
+/** 根据账单数据自动推断迁移路径 A（有凭证）或路径 B（无凭证） */
+function resolveMigrationStatus(data: Record<string, unknown>): MigrationStatus | null {
+  const rawData    = (typeof data['rawData'] === 'object' && data['rawData'] !== null)
+    ? (data['rawData'] as Record<string, unknown>)
+    : {}
+  if (rawData['_migratedFromV2'] !== true) return null   // 非迁移数据，不打标
+  const hasVoucher = Array.isArray(data['receiptUrls']) &&
+    (data['receiptUrls'] as unknown[]).length > 0
+  return hasVoucher ? 'V2_COMPLETE' : 'V2_TEXT_ONLY'
+}
+
 /**
  * forceAdd — 强制入账
  *
  * 清除 isDuplicate 标记，设置 isVerified=true，将 status 置为 cleared。
- * 适用场景：人工核查后确认该条账单并非重复，强制放行。
+ * 若为 V2 迁移账单，自动在 rawData 写入分流标记：
+ *   · 有凭证 → migrationStatus='V2_COMPLETE', hasPhysicalVoucher=true
+ *   · 无凭证 → migrationStatus='V2_TEXT_ONLY', hasPhysicalVoucher=false
  *
  * @param txId        目标账单 Firestore 文档 ID
  * @param operatorUid 操作者 UID（写入版本记录）
@@ -68,11 +86,24 @@ export async function forceAdd(txId: string, operatorUid: string): Promise<void>
   const snap = await getDoc(ref)
   if (!snap.exists()) throw new Error(`账单 ${txId} 不存在`)
 
-  const before = snap.data() as Record<string, unknown>
+  const before     = snap.data() as Record<string, unknown>
+  const existingRaw: Record<string, unknown> =
+    (typeof before['rawData'] === 'object' && before['rawData'] !== null)
+      ? (before['rawData'] as Record<string, unknown>)
+      : {}
+
+  // 自动推断 A/B 路径并打标
+  const status    = resolveMigrationStatus(before)
+  const migration = status !== null ? {
+    migrationStatus:    status,
+    hasPhysicalVoucher: status === 'V2_COMPLETE',
+  } : {}
+
   const patch: Record<string, unknown> = {
     isDuplicate: false,
     isVerified:  true,
     status:      'cleared',
+    rawData:     { ...existingRaw, ...migration },
     updatedAt:   Date.now(),
   }
 
@@ -85,7 +116,92 @@ export async function forceAdd(txId: string, operatorUid: string): Promise<void>
     { ...before, ...patch },
     operatorUid,
   )
-  console.debug(`[governanceService] 强制入账完成 txId=${txId}`)
+  console.debug(
+    `[governanceService] 强制入账完成 txId=${txId}` +
+    (status ? ` migrationStatus=${status}` : '')
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 2b  批量强制入账（待验证队列专用）
+// ════════════════════════════════════════════════════════════════
+
+export interface BatchForceAddResult {
+  succeeded:     number
+  failed:        number
+  completeCount: number   // 路径 A：V2_COMPLETE（有凭证）
+  textOnlyCount: number   // 路径 B：V2_TEXT_ONLY（无凭证）
+  errors:        string[]
+}
+
+/**
+ * batchForceAdd — 批量强制入账
+ *
+ * 并发读取全部账单 → writeBatch 原子提交主字段 → 并发写版本记录
+ * 自动为每条 V2 迁移账单打 A/B 分流标记（V2_COMPLETE / V2_TEXT_ONLY）
+ *
+ * @param txIds       目标账单 ID 数组
+ * @param operatorUid 操作者 UID
+ */
+export async function batchForceAdd(
+  txIds:        string[],
+  operatorUid:  string,
+): Promise<BatchForceAddResult> {
+  if (txIds.length === 0) return { succeeded: 0, failed: 0, completeCount: 0, textOnlyCount: 0, errors: [] }
+
+  // ── 并发读取所有账单快照 ──────────────────────────────────────
+  const snaps = await Promise.all(txIds.map(id => getDoc(doc(db, 'transactions', id))))
+
+  const result: BatchForceAddResult = { succeeded: 0, failed: 0, completeCount: 0, textOnlyCount: 0, errors: [] }
+  const BATCH_LIMIT = 499
+  const chunks = []
+  for (let i = 0; i < snaps.length; i += BATCH_LIMIT) chunks.push(snaps.slice(i, i + BATCH_LIMIT))
+
+  for (const chunk of chunks) {
+    const batch   = writeBatch(db)
+    const metas: Array<{ txId: string; before: Record<string, unknown>; patch: Record<string, unknown> }> = []
+
+    for (const snap of chunk) {
+      if (!snap.exists()) { result.failed++; result.errors.push(`${snap.id} 不存在`); continue }
+      const before      = snap.data() as Record<string, unknown>
+      const existingRaw = (typeof before['rawData'] === 'object' && before['rawData'] !== null)
+        ? (before['rawData'] as Record<string, unknown>) : {}
+      const status      = resolveMigrationStatus(before)
+      const migration   = status !== null ? {
+        migrationStatus:    status,
+        hasPhysicalVoucher: status === 'V2_COMPLETE',
+      } : {}
+      const patch: Record<string, unknown> = {
+        isDuplicate: false, isVerified: true, status: 'cleared',
+        rawData: { ...existingRaw, ...migration }, updatedAt: Date.now(),
+      }
+      batch.update(doc(db, 'transactions', snap.id), patch)
+      metas.push({ txId: snap.id, before, patch })
+      if (status === 'V2_COMPLETE')  result.completeCount++
+      else if (status === 'V2_TEXT_ONLY') result.textOnlyCount++
+    }
+
+    try {
+      await batch.commit()
+      result.succeeded += metas.length
+      // 版本记录并发写入（不阻塞主流程）
+      void Promise.all(metas.map(({ txId, before, patch }) =>
+        writeVersionRecord(
+          txId, String(before['ledgerId'] ?? ''), 'force_add',
+          before, { ...before, ...patch }, operatorUid,
+        ).catch(e => console.warn(`[governanceService] 版本记录写入失败 txId=${txId}`, e))
+      ))
+    } catch (e) {
+      result.failed += metas.length
+      result.errors.push(e instanceof Error ? e.message : '批量提交失败')
+    }
+  }
+
+  console.debug(
+    `[governanceService] 批量强制入账完成 成功=${result.succeeded} 失败=${result.failed}` +
+    ` V2_COMPLETE=${result.completeCount} V2_TEXT_ONLY=${result.textOnlyCount}`
+  )
+  return result
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -214,27 +330,122 @@ export async function mergeTransactions(
 }
 
 // ════════════════════════════════════════════════════════════════
-// § 5  凭证解绑（含历史回改规则）
+// § 5  无凭证强行入账
 // ════════════════════════════════════════════════════════════════
 
 /**
- * unbindEvidence — 解绑并永久删除一张凭证，执行历史回改规则
+ * confirmNoEvidence — 无凭证强行入账
+ *
+ * 适用场景：用户确认该条迁移账单确实无凭证可补，选择忽略警告强制入账。
+ *
+ * 操作效果：
+ *   · isVerified = true               — 账单已核实
+ *   · status = 'cleared'              — 确认入账
+ *   · tags 追加 '无凭证'              — 打标，便于后续筛选
+ *   · rawData._noEvidenceConfirmed = true — 内部标记，令 detectConflicts 跳过此账单
+ *   · 写版本记录（复用 force_add 类型）
+ *
+ * @param txId        目标账单 Firestore 文档 ID
+ * @param operatorUid 操作者 UID
+ */
+export async function confirmNoEvidence(txId: string, operatorUid: string): Promise<void> {
+  const txRef = doc(db, 'transactions', txId)
+  const snap  = await getDoc(txRef)
+  if (!snap.exists()) throw new Error(`账单 ${txId} 不存在`)
+
+  const before     = snap.data() as Record<string, unknown>
+  const existingTags = Array.isArray(before['tags']) ? (before['tags'] as string[]) : []
+  const existingRaw  = (typeof before['rawData'] === 'object' && before['rawData'] !== null)
+    ? (before['rawData'] as Record<string, unknown>)
+    : {}
+
+  // 缺凭证队列强行入账 → 固定为 V2_TEXT_ONLY 路径 B
+  const patch: Record<string, unknown> = {
+    isVerified: true,
+    status:     'cleared',
+    tags:       [...new Set([...existingTags, '无凭证'])],
+    rawData:    {
+      ...existingRaw,
+      _noEvidenceConfirmed: true,
+      migrationStatus:      'V2_TEXT_ONLY' as MigrationStatus,
+      hasPhysicalVoucher:   false,
+    },
+    updatedAt:  Date.now(),
+  }
+
+  await updateDoc(txRef, patch)
+  await writeVersionRecord(
+    txId,
+    String(before['ledgerId'] ?? ''),
+    'force_add',
+    before,
+    { ...before, ...patch },
+    operatorUid,
+  )
+  console.debug(`[governanceService] 无凭证强行入账完成 txId=${txId}`)
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 6  补传凭证后更新账单 receiptUrls
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * attachEvidenceUrl — 将新上传凭证的 Storage URL 追加到账单 receiptUrls
+ *
+ * 配合 evidenceService.uploadEvidence() 使用：
+ *   1. 先调用 uploadEvidence() 上传文件，拿到 Evidence.storageUrl
+ *   2. 再调用本函数更新 Transaction.receiptUrls
+ *   3. 更新后账单满足 receiptUrls.length > 0 → detectConflicts 移出 no_evidence 队列
+ *
+ * @param txId        目标账单 Firestore 文档 ID
+ * @param storageUrl  uploadEvidence 返回的 Firebase Storage 公开下载 URL
+ * @param operatorUid 操作者 UID
+ */
+export async function attachEvidenceUrl(
+  txId:        string,
+  storageUrl:  string,
+  operatorUid: string,
+): Promise<void> {
+  const txRef = doc(db, 'transactions', txId)
+  const snap  = await getDoc(txRef)
+  if (!snap.exists()) throw new Error(`账单 ${txId} 不存在`)
+
+  const before       = snap.data() as Record<string, unknown>
+  const existingUrls = Array.isArray(before['receiptUrls']) ? (before['receiptUrls'] as string[]) : []
+
+  const patch: Record<string, unknown> = {
+    receiptUrls: [...new Set([...existingUrls, storageUrl])],
+    updatedAt:   Date.now(),
+  }
+
+  await updateDoc(txRef, patch)
+  await writeVersionRecord(
+    txId,
+    String(before['ledgerId'] ?? ''),
+    'field_update',
+    before,
+    { ...before, ...patch },
+    operatorUid,
+  )
+  console.debug(`[governanceService] 凭证 URL 已绑定 txId=${txId} url=${storageUrl.slice(0, 60)}…`)
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 7  凭证解绑（含历史回改规则）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * unbindEvidence — 软解绑一张凭证（移入凭证池），执行版本审计记录
+ *
+ * ⚠️  行为变更（Soft Unbind）：
+ *   凭证不再物理删除，而是置为 orphan 状态保留在凭证池，
+ *   方便后续重新挂载到其他账单，或由凭证池管理员手动硬删。
  *
  * 执行步骤：
- *   1. 读取凭证文档（获取 storagePath）
- *   2. 读取关联账单的操作前快照（写版本记录用）
- *   3. 调用 deleteEvidence()（Storage 文件 + Firestore 凭证文档双删）
- *   4. 统计该账单剩余凭证数量（解绑后再查，排除刚删除的那张）
- *   5. 【历史回改规则】若剩余凭证为 0：
- *      - 将 transaction.isVerified 回退为 false
- *      - 效果：账单重新进入 ConflictCenter「待验证」队列，
- *        触发条件：isMigrated && isVerified !== true → pending 冲突
- *   6. 写入 transactionVersions 审计记录（before/after 完整快照）
- *
- * 设计说明：
- *   Transaction.status 只有 expected / cleared / void 三态，
- *   无 missing_evidence 枚举值，故通过回退 isVerified=false 实现
- *   "凭证不完整"的语义表达，复用现有冲突检测管道，无需扩展数据模型。
+ *   1. 读取账单操作前快照（供写版本记录用）
+ *   2. 调用 softUnbindEvidence()，完成状态机迁移 + receiptUrls 更新 + 历史回改
+ *   3. 读取账单操作后快照
+ *   4. 写入 transactionVersions 审计记录（before/after 完整快照）
  *
  * @param evidenceId  Firestore evidences 文档 ID
  * @param txId        关联账单的 Firestore 文档 ID
@@ -245,58 +456,111 @@ export async function unbindEvidence(
   txId:        string,
   operatorUid: string,
 ): Promise<void> {
-  // ── 步骤 1：读取凭证文档（获取 storagePath）─────────────────────
-  const evRef  = doc(db, 'evidences', evidenceId)
-  const evSnap = await getDoc(evRef)
-  if (!evSnap.exists()) throw new Error(`凭证 ${evidenceId} 不存在或已被删除`)
-  const storagePath = String(evSnap.data()['storagePath'] ?? '')
-
-  // ── 步骤 2：读取账单操作前快照 ────────────────────────────────
+  // ── 步骤 1：读取账单操作前快照 ────────────────────────────────
   const txRef  = doc(db, 'transactions', txId)
   const txSnap = await getDoc(txRef)
   if (!txSnap.exists()) throw new Error(`账单 ${txId} 不存在`)
   const txBefore = txSnap.data() as Record<string, unknown>
   const ledgerId = String(txBefore['ledgerId'] ?? '')
 
-  // ── 步骤 3：删除凭证（Storage 文件 + Firestore 文档）──────────
-  // deleteEvidence 内部容错：Storage 文件不存在时跳过，不抛异常
-  await deleteEvidence(evidenceId, storagePath)
+  // ── 步骤 2：软解绑（状态机迁移 + receiptUrls 更新 + 历史回改）──
+  // softUnbindEvidence 内部处理：evidence → orphan，arrayRemove URL，isVerified 回退
+  await softUnbindEvidence(evidenceId, txId)
 
-  // ── 步骤 4：查询该账单的剩余凭证数量 ─────────────────────────
-  // 此时凭证文档已被 deleteDoc，getDocs 结果不含刚删除的那张
-  const remainingSnap = await getDocs(
-    query(
-      collection(db, 'evidences'),
-      where('transactionId', '==', txId),
-    )
-  )
-  const remainingCount = remainingSnap.size
+  // ── 步骤 3：读取账单操作后快照 ────────────────────────────────
+  const txAfterSnap = await getDoc(txRef)
+  const txAfter     = txAfterSnap.exists()
+    ? (txAfterSnap.data() as Record<string, unknown>)
+    : { ...txBefore }
 
-  // ── 步骤 5：历史回改规则 ─────────────────────────────────────
-  // 无剩余凭证时，将 isVerified 回退为 false：
-  //   · 使该账单重新满足"待验证"冲突条件（isMigrated && !isVerified）
-  //   · ConflictCenter 的 onSnapshot 将自动重新检测并展示该冲突
-  const txPatch: Record<string, unknown> = { updatedAt: Date.now() }
-  if (remainingCount === 0) {
-    txPatch['isVerified'] = false
-    console.debug(
-      `[governanceService] 剩余凭证为 0，回退 isVerified=false txId=${txId}`
-    )
-  }
-  await updateDoc(txRef, txPatch)
-
-  // ── 步骤 6：写版本记录（审计追踪）───────────────────────────
+  // ── 步骤 4：写版本记录（审计追踪）───────────────────────────
   await writeVersionRecord(
     txId,
     ledgerId,
     'field_update',
     txBefore,
-    { ...txBefore, ...txPatch },
+    txAfter,
     operatorUid,
   )
 
   console.debug(
-    `[governanceService] 凭证解绑完成 evId=${evidenceId} txId=${txId}` +
-    ` 剩余凭证=${remainingCount} 历史回改=${remainingCount === 0 ? '是' : '否'}`
+    `[governanceService] 凭证软解绑完成 evId=${evidenceId} txId=${txId} → 凭证池`
   )
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 8  批量无凭证强行入账（缺凭证队列专用）
+// ════════════════════════════════════════════════════════════════
+
+export interface BatchNoEvidenceResult {
+  succeeded: number
+  failed:    number
+  errors:    string[]
+}
+
+/**
+ * batchConfirmNoEvidence — 批量无凭证强行入账
+ *
+ * 路径 B 专用：统一打 V2_TEXT_ONLY + hasPhysicalVoucher=false
+ * 方便后续通过 migrationStatus 筛选"无头账单"进行照片补录。
+ *
+ * @param txIds       目标账单 ID 数组
+ * @param operatorUid 操作者 UID
+ */
+export async function batchConfirmNoEvidence(
+  txIds:        string[],
+  operatorUid:  string,
+): Promise<BatchNoEvidenceResult> {
+  if (txIds.length === 0) return { succeeded: 0, failed: 0, errors: [] }
+
+  const snaps = await Promise.all(txIds.map(id => getDoc(doc(db, 'transactions', id))))
+  const result: BatchNoEvidenceResult = { succeeded: 0, failed: 0, errors: [] }
+  const BATCH_LIMIT = 499
+  const chunks = []
+  for (let i = 0; i < snaps.length; i += BATCH_LIMIT) chunks.push(snaps.slice(i, i + BATCH_LIMIT))
+
+  for (const chunk of chunks) {
+    const batch = writeBatch(db)
+    const metas: Array<{ txId: string; before: Record<string, unknown>; patch: Record<string, unknown> }> = []
+
+    for (const snap of chunk) {
+      if (!snap.exists()) { result.failed++; result.errors.push(`${snap.id} 不存在`); continue }
+      const before       = snap.data() as Record<string, unknown>
+      const existingTags = Array.isArray(before['tags']) ? (before['tags'] as string[]) : []
+      const existingRaw  = (typeof before['rawData'] === 'object' && before['rawData'] !== null)
+        ? (before['rawData'] as Record<string, unknown>) : {}
+      const patch: Record<string, unknown> = {
+        isVerified: true, status: 'cleared',
+        tags:       [...new Set([...existingTags, '无凭证'])],
+        rawData:    {
+          ...existingRaw,
+          _noEvidenceConfirmed: true,
+          migrationStatus:      'V2_TEXT_ONLY' as MigrationStatus,
+          hasPhysicalVoucher:   false,
+        },
+        updatedAt: Date.now(),
+      }
+      batch.update(doc(db, 'transactions', snap.id), patch)
+      metas.push({ txId: snap.id, before, patch })
+    }
+
+    try {
+      await batch.commit()
+      result.succeeded += metas.length
+      void Promise.all(metas.map(({ txId, before, patch }) =>
+        writeVersionRecord(
+          txId, String(before['ledgerId'] ?? ''), 'force_add',
+          before, { ...before, ...patch }, operatorUid,
+        ).catch(e => console.warn(`[governanceService] 版本记录写入失败 txId=${txId}`, e))
+      ))
+    } catch (e) {
+      result.failed += metas.length
+      result.errors.push(e instanceof Error ? e.message : '批量提交失败')
+    }
+  }
+
+  console.debug(
+    `[governanceService] 批量无凭证入账完成 成功=${result.succeeded} 失败=${result.failed}`
+  )
+  return result
 }

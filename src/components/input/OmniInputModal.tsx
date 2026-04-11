@@ -101,16 +101,31 @@ interface DraftItem {
   amount:   number
   category: SystemCategory
   date:     string
-  notes:    string
+  notes:    string    // → maps to description（说明 *）
+  remark:   string    // → maps to remark（备注，选填）
+}
+
+// ─────────────────────────────────────────────────────────────
+// Edit mode data shape (used by HomePage to intercept save)
+// ─────────────────────────────────────────────────────────────
+export interface EditSaveData {
+  amount:      number
+  category:    string   // 放宽为 string，兼容用户自定义分类
+  date:        string
+  description: string
+  remark:      string   // 备注（说明二）
+  currency:    string
 }
 
 // ─────────────────────────────────────────────────────────────
 // Props
 // ─────────────────────────────────────────────────────────────
 interface OmniInputModalProps {
-  isOpen:     boolean
-  onClose:    () => void
-  showToast?: (msg: string, type?: 'success' | 'warning' | 'error') => void
+  isOpen:      boolean
+  onClose:     () => void
+  showToast?:  (msg: string, type?: 'success' | 'warning' | 'error') => void
+  editTx?:     Transaction
+  onSaveEdit?: (data: EditSaveData) => Promise<void>
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -151,36 +166,27 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
     <div className="bg-white rounded-2xl border-2 border-gray-100 p-4 space-y-3
                     shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
 
-      {/* 卡片头：序号 + 删除按钮 */}
+      {/* 卡片头：序号 + 删除 */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="w-6 h-6 rounded-full bg-primary-100 text-primary-700
-                           text-[11px] font-bold flex items-center justify-center">
-            {index + 1}
-          </span>
-          <span className="text-xs font-semibold text-content-secondary">
-            {CATEGORY_ICON[item.category] ?? '📋'} {item.category}
-          </span>
-        </div>
+        <span className="w-6 h-6 rounded-full bg-primary-100 text-primary-700
+                         text-[11px] font-bold flex items-center justify-center flex-shrink-0">
+          {index + 1}
+        </span>
         <button
           onClick={() => onRemove(item._id)}
-          className="w-7 h-7 rounded-full bg-red-50 text-red-400
-                     flex items-center justify-center text-xs
-                     hover:bg-red-100 hover:text-red-600 transition-colors"
+          className="w-7 h-7 rounded-full bg-red-50 text-red-400 flex items-center
+                     justify-center text-xs hover:bg-red-100 hover:text-red-600 transition-colors"
           title="移除此条"
-        >
-          🗑️
-        </button>
+        >🗑️</button>
       </div>
 
       {/* 金额（大字醒目） */}
       <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2
-                         text-lg font-bold text-slate-400">-¥</span>
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-slate-400">
+          -¥
+        </span>
         <input
-          type="number"
-          min="0"
-          step="0.01"
+          type="number" min="0" step="0.01"
           value={item.amount}
           onChange={e => onChange(item._id, 'amount', parseFloat(e.target.value) || 0)}
           className="w-full pl-10 pr-4 py-2.5 text-xl font-bold tabular-nums
@@ -202,26 +208,47 @@ function DraftCard({ item, index, onChange, onRemove }: DraftCardProps) {
         ))}
       </select>
 
-      {/* 日期 + 说明（两列并排） */}
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          type="date"
-          value={item.date}
-          onChange={e => onChange(item._id, 'date', e.target.value)}
-          className="px-3 py-2 bg-slate-100 text-slate-900 rounded-xl text-xs
-                     border-2 border-transparent focus:border-primary-300
-                     focus:bg-white outline-none transition-all"
-        />
+      {/* 日期 */}
+      <input
+        type="date"
+        value={item.date}
+        onChange={e => onChange(item._id, 'date', e.target.value)}
+        className="w-full px-3 py-2 bg-slate-100 text-slate-900 rounded-xl text-sm
+                   border-2 border-transparent focus:border-primary-300
+                   focus:bg-white outline-none transition-all"
+      />
+
+      {/* 说明 *（与手工表单对齐）*/}
+      <div>
+        <p className="text-xs font-semibold text-slate-600 mb-1">
+          说明 <span className="text-rose-400">*</span>
+        </p>
         <input
           type="text"
           value={item.notes}
-          placeholder="说明"
-          maxLength={30}
+          placeholder="请输入说明，如「星巴克拿铁」"
+          maxLength={50}
           onChange={e => onChange(item._id, 'notes', e.target.value)}
-          className="px-3 py-2 bg-slate-100 text-slate-900 rounded-xl text-xs
-                     border-2 border-transparent focus:border-primary-300
-                     focus:bg-white outline-none transition-all
-                     placeholder:text-slate-400"
+          className="w-full px-3 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
+                     border-2 border-transparent focus:border-primary-300 focus:bg-white
+                     outline-none transition-all placeholder:text-slate-400"
+        />
+      </div>
+
+      {/* 备注（选填，与手工表单对齐）*/}
+      <div>
+        <p className="text-xs font-semibold text-slate-600 mb-1">
+          备注 <span className="text-slate-400 font-normal">（选填）</span>
+        </p>
+        <input
+          type="text"
+          value={item.remark}
+          placeholder="可补充额外信息，如「报销项目」"
+          maxLength={100}
+          onChange={e => onChange(item._id, 'remark', e.target.value)}
+          className="w-full px-3 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
+                     border-2 border-transparent focus:border-primary-300 focus:bg-white
+                     outline-none transition-all placeholder:text-slate-400"
         />
       </div>
 
@@ -348,6 +375,7 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
         category: r.category,
         date:     r.date,
         notes:    r.notes,
+        remark:   '',
       }))
       setDrafts(draftItems)
       setSmartState('review')
@@ -392,6 +420,7 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
           amount:           -Math.abs(item.amount),
           category:         item.category,
           description:      item.notes || item.category,
+          remark:           item.remark || '',
           source:           'manual',
           sourceType:       'manual',
           status:           'cleared',
@@ -870,7 +899,7 @@ function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
 //   sm:max-w-lg sm:mx-auto     — PC 端居中悬浮
 //   max-h-[90dvh] flex flex-col — 高度限制 + 三段式 Flex 根容器
 // ─────────────────────────────────────────────────────────────
-export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInputModalProps) {
+export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onSaveEdit }: OmniInputModalProps) {
 
   type InputTab = 'manual' | 'smart' | 'ocr'
   const [activeTab, setActiveTab] = useState<InputTab>('manual')
@@ -891,11 +920,17 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   type TxType = 'expense' | 'income'
   const [txType,    setTxType]    = useState<TxType>('expense')
   const [amountStr, setAmountStr] = useState('')
-  const [category,  setCategory]  = useState<SystemCategory>('餐饮')
+  // category 放宽为 string，兼容用户新增的自定义分类
+  const [category,  setCategory]  = useState<string>('餐饮')
   const [date,      setDate]      = useState(todayStr())
   const [note,      setNote]      = useState('')
+  const [remark,    setRemark]    = useState('')   // 备注（说明二，选填）
   // 币种：可选，默认人民币；打开弹窗时同步为当前账套货币
   const [currency,  setCurrency]  = useState<string>('CNY')
+
+  // ── 新增分类内联输入状态 ──────────────────────────────────
+  const [showCatInput,   setShowCatInput]   = useState(false)
+  const [customCatInput, setCustomCatInput] = useState('')
 
   type SubmitState = 'idle' | 'saving' | 'success' | 'error'
   const [submitState, setSubmitState] = useState<SubmitState>('idle')
@@ -903,11 +938,15 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
 
   // ── OCR 回填标志（防止 txType effect 在 OCR 填表后覆盖 AI 识别的分类）──
   const ocrFillingRef = useRef(false)
+  // ── 编辑模式收支互转标志（防止 txType effect 重置手动搬运的分类）──
+  const editTypeSwappingRef = useRef(false)
 
   // 收入/支出切换时重置分类
-  // 例外：OCR 刚刚回填时（ocrFillingRef=true），跳过重置，保留 AI 识别分类
+  // 例外1：OCR 刚刚回填时（ocrFillingRef=true），跳过重置
+  // 例外2：编辑模式收支互转确认后（editTypeSwappingRef=true），分类已手动设定，跳过重置
   useEffect(() => {
-    if (ocrFillingRef.current) { ocrFillingRef.current = false; return }
+    if (ocrFillingRef.current)      { ocrFillingRef.current = false; return }
+    if (editTypeSwappingRef.current){ editTypeSwappingRef.current = false; return }
     setCategory(txType === 'income' ? '工资' : '餐饮')
   }, [txType])
 
@@ -922,22 +961,33 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
   // 而非每次 activeLedgerCurrency 变化时都重置（导致 OCR 结果被清空）
   const prevIsOpenRef = useRef(false)
 
-  // 打开时重置所有状态（仅在 isOpen 从 false 跳变为 true 时触发一次）
-  // 依赖数组有意只写 [isOpen]，activeLedgerCurrency 通过 ref 读取
   useEffect(() => {
     if (isOpen && !prevIsOpenRef.current) {
       setActiveTab('manual')
-      setTxType('expense')
-      setAmountStr('')
-      setCategory('餐饮')
-      setDate(todayStr())
-      setNote('')
       setSubmitState('idle')
       setErrorMsg('')
-      setCurrency(activeLedgerCurrencyRef.current)  // 通过 ref 读取，不作为依赖
+      setShowCatInput(false)
+      setCustomCatInput('')
+      if (editTx) {
+        setTxType(editTx.amount > 0 ? 'income' : 'expense')
+        setAmountStr(String(Math.abs(editTx.amount)))
+        setCategory(editTx.category)
+        setDate(editTx.date)
+        setNote(editTx.description || '')
+        setRemark(editTx.remark ?? '')
+        setCurrency(activeLedgerCurrencyRef.current)
+      } else {
+        setTxType('expense')
+        setAmountStr('')
+        setCategory('餐饮')
+        setDate(todayStr())
+        setNote('')
+        setRemark('')
+        setCurrency(activeLedgerCurrencyRef.current)
+      }
     }
     prevIsOpenRef.current = isOpen
-  }, [isOpen])  // 有意排除 activeLedgerCurrency，详见上方注释
+  }, [isOpen, editTx])
 
   // 金额框自动聚焦
   const amountRef = useRef<HTMLInputElement>(null)
@@ -946,6 +996,44 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
       setTimeout(() => amountRef.current?.focus(), 150)
     }
   }, [isOpen, activeTab])
+
+  // ── 收支类型切换（编辑模式需弹确认，普通模式直接切）────────
+  function handleTypeToggle(newType: TxType) {
+    if (newType === txType) return  // 未切换，无需处理
+
+    if (editTx) {
+      // 编辑模式：弹原生确认框，防止误操作
+      const label = newType === 'income' ? '收入' : '支出'
+      const ok = window.confirm(
+        `确定将此笔账单切换为【${label}】吗？\n\n` +
+        `✅ 保留：金额绝对值、说明、备注、日期\n` +
+        `🔄 重置：分类将重置为默认${label}分类\n\n` +
+        `切换后请检查所有字段，然后手动点击「保存修改」。`
+      )
+      if (!ok) return
+
+      // 标记：阻止 txType useEffect 重置分类（我们手动搬运）
+      editTypeSwappingRef.current = true
+      setTxType(newType)
+      setCategory(newType === 'income' ? '工资' : '餐饮')
+      // amountStr / note / remark / date 保持原值，无需操作
+      setShowCatInput(false)
+      setCustomCatInput('')
+      setErrorMsg('')
+    } else {
+      // 新建模式：直接切换，useEffect 自动重置分类
+      setTxType(newType)
+    }
+  }
+
+  // ── 确认新增自定义分类 ────────────────────────────────────
+  function confirmCustomCat() {
+    const name = customCatInput.trim()
+    if (!name) return
+    setCategory(name)
+    setShowCatInput(false)
+    setCustomCatInput('')
+  }
 
   function validate(): string | null {
     const amt = parseFloat(amountStr)
@@ -960,10 +1048,32 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
     if (err) { setErrorMsg(err); return }
     setErrorMsg(''); setSubmitState('saving')
     const amt = parseFloat(amountStr)
+
+    if (editTx && onSaveEdit) {
+      try {
+        await onSaveEdit({
+          amount:      txType === 'income' ? amt : -amt,
+          category,
+          date,
+          description: note.trim() || category,
+          remark:      remark.trim(),
+          currency,
+        })
+        setSubmitState('success')
+        onClose()
+      } catch (e) {
+        const errMsg = (e instanceof Error ? e.message : String(e)).slice(0, 120)
+        setErrorMsg(errMsg)
+        setSubmitState('error')
+      }
+      return
+    }
+
     const data: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> = {
       ledgerId: activeLedgerId, userId: currentUserId, date,
       amount:   txType === 'income' ? amt : -amt,
       category, description: note.trim() || category,
+      remark:   remark.trim(),   // 绝不写 undefined，空字符串合法
       source: 'manual', sourceType: 'manual', status: 'cleared',
       tags: [], accountId: 'acc-manual', rawData: {}, isManuallyEdited: false,
     }
@@ -1016,19 +1126,26 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
           · 内部不设 overflow-y-auto — 滚动由各 Tab Body 区独立管理
       */}
       <div
-        className="relative w-[95%] sm:max-w-lg
-                   bg-white rounded-2xl shadow-xl
+        className={`relative w-[95%] sm:max-w-lg
+                   ${activeTab === 'manual' && txType === 'income' ? 'bg-blue-50' : 'bg-white'}
+                   rounded-2xl shadow-xl
                    max-h-[90dvh] flex flex-col overflow-hidden
-                   animate-[slideUp_0.25s_ease-out]"
+                   animate-[slideUp_0.25s_ease-out]`}
         onClick={e => e.stopPropagation()}
       >
 
         {/* ══ ① Header：标题行 + Tab 切换栏（固定不滚动）══ */}
         <div className="flex-shrink-0 pt-4">
 
-          {/* 标题行 */}
           <div className="flex items-center justify-between px-5 pb-3">
-            <h2 className="text-base font-bold text-content-primary">记一笔</h2>
+            <div>
+              <h2 className="text-base font-bold text-content-primary">
+                {editTx ? '修改记录' : '记一笔'}
+              </h2>
+              {editTx && (
+                <p className="text-[11px] text-red-500 font-medium mt-0.5">当前处于修改模式</p>
+              )}
+            </div>
             <button
               onClick={onClose}
               className="w-7 h-7 flex items-center justify-center rounded-full
@@ -1038,67 +1155,63 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
             </button>
           </div>
 
-          {/* 三 Tab 切换栏 */}
-          <div className="flex gap-2 px-5 pb-4">
+          {!editTx && (
+            <div className="flex gap-2 px-5 pb-4">
 
-            <button
-              onClick={() => setActiveTab('manual')}
-              className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-                activeTab === 'manual'
-                  ? 'bg-primary-600 text-white shadow-sm'
-                  : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
-              }`}
-            >
-              ✍️ 手写
-            </button>
+              <button
+                onClick={() => setActiveTab('manual')}
+                className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                  activeTab === 'manual'
+                    ? 'bg-primary-600 text-white shadow-sm'
+                    : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
+                }`}
+              >
+                ✍️ 手写
+              </button>
 
-            <button
-              onClick={() => setActiveTab('smart')}
-              className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-                activeTab === 'smart'
-                  ? 'bg-primary-600 text-white shadow-sm'
-                  : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
-              }`}
-            >
-              ✨ 智能
-              <span className={`ml-1 text-[9px] font-bold align-middle ${
-                activeTab === 'smart' ? 'text-primary-200' : 'text-primary-400'
-              }`}>✦AI</span>
-            </button>
+              <button
+                onClick={() => setActiveTab('smart')}
+                className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                  activeTab === 'smart'
+                    ? 'bg-primary-600 text-white shadow-sm'
+                    : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
+                }`}
+              >
+                ✨ 智能
+                <span className={`ml-1 text-[9px] font-bold align-middle ${
+                  activeTab === 'smart' ? 'text-primary-200' : 'text-primary-400'
+                }`}>✦AI</span>
+              </button>
 
-            <button
-              onClick={() => setActiveTab('ocr')}
-              className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-                activeTab === 'ocr'
-                  ? 'bg-primary-600 text-white shadow-sm'
-                  : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
-              }`}
-            >
-              📸 拍照
-              <span className={`ml-1 text-[9px] font-bold align-middle ${
-                activeTab === 'ocr' ? 'text-primary-200' : 'text-primary-400'
-              }`}>✦AI</span>
-            </button>
+              <button
+                onClick={() => setActiveTab('ocr')}
+                className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                  activeTab === 'ocr'
+                    ? 'bg-primary-600 text-white shadow-sm'
+                    : 'bg-surface-overlay text-content-tertiary hover:text-primary-600'
+                }`}
+              >
+                📸 拍照
+                <span className={`ml-1 text-[9px] font-bold align-middle ${
+                  activeTab === 'ocr' ? 'text-primary-200' : 'text-primary-400'
+                }`}>✦AI</span>
+              </button>
 
-          </div>
+            </div>
+          )}
         </div>
 
         {/* ══ ② Body：弹性内容区，各 Tab 内部独立完成布局 ══ */}
         <div className="flex-1 min-h-0 flex flex-col">
 
-          {/* ✍️ 手写录入 Tab
-              内部也是三段式：表单字段(scroll) / 错误+保存按钮(fixed footer)
-          */}
           {activeTab === 'manual' && (
             <>
-              {/* 表单字段滚动区 */}
-              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-4 space-y-4">
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-1 pb-4 space-y-3">
 
-                {/* 收支类型 */}
                 <div className="flex gap-2 p-1 bg-surface-overlay rounded-xl">
-                  {([['expense','💸 支出','text-rose-600'],['income','💰 收入','text-emerald-600']] as const)
+                  {([['expense','💸 支出','text-rose-600'],['income','💰 收入','text-blue-600']] as const)
                     .map(([type, label, cls]) => (
-                      <button key={type} onClick={() => setTxType(type)}
+                      <button key={type} onClick={() => handleTypeToggle(type)}
                         className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
                           txType === type ? `bg-white ${cls} shadow-sm` : 'text-content-tertiary'}`}>
                         {label}
@@ -1106,34 +1219,73 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                     ))}
                 </div>
 
-                {/* 金额 */}
-                <div className="relative">
-                  {/* 货币符号随 currency 状态动态更新 */}
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-slate-400">
-                    {txType === 'income' ? '+' : '-'}{getCurrencySymbol(currency)}
-                  </span>
-                  <input
-                    ref={amountRef}
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    value={amountStr}
-                    onChange={e => { setAmountStr(e.target.value); setErrorMsg('') }}
-                    className="w-full pl-14 pr-4 py-4 text-3xl font-bold tabular-nums
-                               bg-slate-100 text-slate-900
+                <div className="flex items-stretch gap-2">
+                  <div className="flex-1 relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-slate-400">
+                      {txType === 'income' ? '+' : '-'}{getCurrencySymbol(currency)}
+                    </span>
+                    <input
+                      ref={amountRef}
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      value={amountStr}
+                      onChange={e => { setAmountStr(e.target.value); setErrorMsg('') }}
+                      className="w-full pl-14 pr-3 py-4 text-3xl font-bold tabular-nums
+                                 bg-slate-100 text-slate-900
+                                 rounded-2xl border-2 border-transparent focus:border-primary-300
+                                 focus:bg-white outline-none transition-all
+                                 placeholder:text-slate-300"
+                    />
+                  </div>
+                  <select
+                    value={currency}
+                    onChange={e => setCurrency(e.target.value)}
+                    className="flex-shrink-0 px-2 bg-slate-100 text-slate-700 text-xs font-semibold
                                rounded-2xl border-2 border-transparent focus:border-primary-300
-                               focus:bg-white outline-none transition-all
-                               placeholder:text-slate-300"
+                               focus:bg-white outline-none transition-all cursor-pointer"
+                  >
+                    {Object.keys(CURRENCY_SYMBOLS).map(code => (
+                      <option key={code} value={code}>{code}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-slate-600 mb-1.5">说明 <span className="text-rose-400">*</span></p>
+                  <input
+                    type="text"
+                    placeholder="请输入说明，如「星巴克拿铁」"
+                    value={note}
+                    maxLength={50}
+                    onChange={e => setNote(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
+                               border-2 border-transparent focus:border-primary-300 focus:bg-white
+                               outline-none transition-all placeholder:text-slate-400"
                   />
                 </div>
 
-                {/* 分类 */}
                 <div>
-                  <p className="text-xs font-semibold text-content-secondary mb-2">分类</p>
-                  <div className="flex flex-wrap gap-2">
+                  <p className="text-xs font-semibold text-slate-600 mb-1.5">备注 <span className="text-slate-400 font-normal">（选填）</span></p>
+                  <input
+                    type="text"
+                    placeholder="可补充额外信息，如「报销项目 / 请客原因」"
+                    value={remark}
+                    maxLength={100}
+                    onChange={e => setRemark(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
+                               border-2 border-transparent focus:border-primary-300 focus:bg-white
+                               outline-none transition-all placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-content-secondary mb-1.5">分类</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {/* 系统分类芯片 */}
                     {categories.map(cat => (
-                      <button key={cat} onClick={() => setCategory(cat)}
-                        className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium
+                      <button key={cat} onClick={() => { setCategory(cat); setShowCatInput(false) }}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium
                                     transition-all border ${
                           category === cat
                             ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
@@ -1142,14 +1294,76 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                         <span>{cat}</span>
                       </button>
                     ))}
+
+                    {/* 用户已输入的自定义分类芯片（不在系统列表中时才显示）*/}
+                    {category && !(categories as readonly string[]).includes(category) && (
+                      <button
+                        onClick={() => setCategory(category)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium
+                                   transition-all border bg-primary-600 text-white border-primary-600 shadow-sm"
+                      >
+                        <span>📌</span>
+                        <span>{category}</span>
+                      </button>
+                    )}
+
+                    {/* ➕ 新增分类按钮 */}
+                    {!showCatInput && (
+                      <button
+                        onClick={() => { setShowCatInput(true); setCustomCatInput('') }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium
+                                   transition-all border border-dashed border-slate-300
+                                   text-slate-500 hover:border-primary-400 hover:text-primary-600"
+                      >
+                        <span>➕</span>
+                        <span>新增</span>
+                      </button>
+                    )}
                   </div>
+
+                  {/* 内联新增分类输入区 */}
+                  {showCatInput && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={customCatInput}
+                        onChange={e => setCustomCatInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter')  confirmCustomCat()
+                          if (e.key === 'Escape') { setShowCatInput(false); setCustomCatInput('') }
+                        }}
+                        placeholder="输入分类名，如「人情往来」"
+                        maxLength={20}
+                        className="flex-1 px-3 py-1.5 bg-slate-100 text-slate-900 rounded-xl text-xs
+                                   border-2 border-primary-300 focus:border-primary-500
+                                   outline-none transition-all placeholder:text-slate-400"
+                      />
+                      <button
+                        onClick={confirmCustomCat}
+                        disabled={!customCatInput.trim()}
+                        className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-primary-600 text-white
+                                   hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed
+                                   transition-colors"
+                      >
+                        确认
+                      </button>
+                      <button
+                        onClick={() => { setShowCatInput(false); setCustomCatInput('') }}
+                        className="px-2 py-1.5 rounded-xl text-xs text-slate-500
+                                   hover:bg-slate-100 transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {/* 日期 */}
                 <div>
-                  <p className="text-xs font-semibold text-slate-600 mb-2">日期</p>
+                  <p className="text-xs font-semibold text-slate-600 mb-1.5">日期</p>
                   <input
-                    type="date" value={date}
+                    type="date"
+                    value={date}
                     onChange={e => setDate(e.target.value)}
                     className="w-full px-4 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
                                border-2 border-transparent focus:border-primary-300 focus:bg-white
@@ -1157,53 +1371,20 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                   />
                 </div>
 
-                {/* 说明（主要事项） */}
-                <div>
-                  <p className="text-xs font-semibold text-slate-600 mb-2">说明 <span className="text-rose-400">*</span></p>
-                  <input
-                    type="text" placeholder={`请输入说明，如「星巴克拿铁」`} value={note} maxLength={50}
-                    onChange={e => setNote(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-slate-100 text-slate-900 rounded-xl text-sm
-                               border-2 border-transparent focus:border-primary-300 focus:bg-white
-                               outline-none transition-all placeholder:text-slate-400"
-                  />
-                </div>
-
-                {/* 币种选择 */}
-                <div>
-                  <p className="text-xs font-semibold text-content-secondary mb-2">币种（选填）</p>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(CURRENCY_SYMBOLS).map(([code, sym]) => (
-                      <button
-                        key={code}
-                        onClick={() => setCurrency(code)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all border ${
-                          currency === code
-                            ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
-                            : 'bg-surface-overlay text-content-secondary border-transparent hover:border-gray-200'
-                        }`}
-                      >
-                        {sym} {code}
-                      </button>
-                    ))}
+                {!editTx && (
+                  <div className="flex items-center gap-1.5 px-3 py-2 bg-primary-50 rounded-xl">
+                    <span className="text-xs">🗂️</span>
+                    <p className="text-xs text-primary-700">
+                      将记入账套：<span className="font-semibold ml-1">{activeLedgerName}</span>
+                    </p>
                   </div>
-                </div>
-
-                {/* 账套提示 */}
-                <div className="flex items-center gap-1.5 px-3 py-2 bg-primary-50 rounded-xl">
-                  <span className="text-xs">🗂️</span>
-                  <p className="text-xs text-primary-700">
-                    将记入账套：<span className="font-semibold ml-1">{activeLedgerName}</span>
-                  </p>
-                </div>
+                )}
 
               </div>
 
-              {/* 底部保存区（固定悬浮，永不被表单遮挡） */}
-              <div className="flex-shrink-0 px-5 pt-3 pb-6
-                              bg-white border-t border-gray-100/80
-                              shadow-[0_-4px_12px_rgba(0,0,0,0.04)]
-                              space-y-2">
+              <div className={`flex-shrink-0 px-5 pt-3 pb-6 border-t border-gray-100/80
+                              shadow-[0_-4px_12px_rgba(0,0,0,0.04)] space-y-2
+                              ${txType === 'income' ? 'bg-blue-50' : 'bg-white'}`}>
                 {errorMsg && (
                   <div className="px-3 py-2 bg-red-50 rounded-xl border border-red-100">
                     <p className="text-xs text-red-600">⚠️ {errorMsg}</p>
@@ -1218,16 +1399,16 @@ export default function OmniInputModal({ isOpen, onClose, showToast }: OmniInput
                     'bg-primary-600 text-white hover:bg-primary-700 active:scale-[0.98] shadow-fab'}`}
                 >
                   {submitState === 'saving' ? (
-                    <span className="flex items-center gap-2">
+                    <span className="flex items-center justify-center gap-2">
                       <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                       </svg>
-                      正在入账…
+                      {editTx ? '正在保存…' : '正在入账…'}
                     </span>
-                  ) : submitState === 'success' ? '✅ 入账成功！'
+                  ) : submitState === 'success' ? (editTx ? '✅ 修改成功！' : '✅ 入账成功！')
                     : submitState === 'error'   ? '❌ 失败，点击重试'
-                    : '💾 保存记账'}
+                    : (editTx ? '💾 保存修改' : '💾 保存记账')}
                 </button>
               </div>
             </>

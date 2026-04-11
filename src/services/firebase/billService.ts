@@ -6,11 +6,15 @@ import {
   doc, addDoc,
   updateDoc,
   deleteDoc,
+  getDocs,
   writeBatch,
   collection,
+  query,
+  where,
   serverTimestamp,
 } from 'firebase/firestore'
-import { db } from '@/config/firebase'
+import { ref as storageRef, deleteObject } from 'firebase/storage'
+import { db, storage } from '@/config/firebase'
 import type { Transaction } from '@/types/Transaction.types'
 
 // ─────────────────────────────────────────────────────────────
@@ -57,6 +61,76 @@ export async function updateTransaction(
   patch: Partial<Omit<Transaction, 'id' | 'ledgerId' | 'userId'>>,
 ): Promise<void> {
   await updateDoc(doc(db, 'transactions', id), patch as Record<string, unknown>)
+}
+
+// ─────────────────────────────────────────────────────────────
+// deleteTransactionDeep — 彻底删除一条账单（含 evidences + Storage）
+//
+// 执行顺序：
+//   1. 查询 evidences 集合中关联该账单的所有凭证
+//   2. 逐一删除 Firebase Storage 文件（容错：文件不存在则跳过）
+//   3. 删除 Firestore evidences 文档
+//   4. 删除 Firestore transactions 文档
+//
+// 适用于迁移数据的物理彻底清除，不留 Storage 垃圾
+// ─────────────────────────────────────────────────────────────
+export async function deleteTransactionDeep(txId: string): Promise<void> {
+  // 1. 查询关联凭证
+  const evSnap = await getDocs(
+    query(collection(db, 'evidences'), where('transactionId', '==', txId))
+  )
+
+  // 2. 并发清理：Storage 文件 + Firestore 凭证文档
+  await Promise.all(evSnap.docs.map(async evDoc => {
+    const storagePath = evDoc.data()['storagePath'] as string | undefined
+    if (storagePath) {
+      try {
+        await deleteObject(storageRef(storage, storagePath))
+      } catch (e: unknown) {
+        const code = (e as Record<string, unknown>)?.['code']
+        if (code !== 'storage/object-not-found') {
+          console.warn(`[billService] Storage 删除失败（已跳过）: ${storagePath}`, e)
+        }
+      }
+    }
+    await deleteDoc(doc(db, 'evidences', evDoc.id))
+  }))
+
+  // 3. 删除账单文档
+  await deleteDoc(doc(db, 'transactions', txId))
+  console.debug('[billService] 账单已深度删除（含凭证）:', txId)
+}
+
+// ─────────────────────────────────────────────────────────────
+// batchDeleteTransactionsDeep — 批量深度删除账单
+//
+// 每批 5 条并发执行，onProgress 回调汇报已完成数量
+// 返回 { deleted, errors } 供 UI 展示结果
+// ─────────────────────────────────────────────────────────────
+export async function batchDeleteTransactionsDeep(
+  txIds:       string[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ deleted: number; errors: string[] }> {
+  let deleted = 0
+  const errors: string[] = []
+  const CONCURRENCY = 5
+
+  for (let i = 0; i < txIds.length; i += CONCURRENCY) {
+    const chunk = txIds.slice(i, i + CONCURRENCY)
+    await Promise.all(chunk.map(async txId => {
+      try {
+        await deleteTransactionDeep(txId)
+        deleted++
+      } catch (e) {
+        errors.push(txId)
+        console.error('[billService] 深度删除失败:', txId, e)
+      }
+    }))
+    onProgress?.(Math.min(i + CONCURRENCY, txIds.length), txIds.length)
+  }
+
+  console.info(`[billService] 批量删除完成: ${deleted}/${txIds.length} 条，失败 ${errors.length} 条`)
+  return { deleted, errors }
 }
 
 // ─────────────────────────────────────────────────────────────

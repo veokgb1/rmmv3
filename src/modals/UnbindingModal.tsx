@@ -1,7 +1,8 @@
 // UnbindingModal — 凭证解绑确认弹窗 (S21)
 //
 // 挂载位置：App.tsx > MainApp（全局单例，与 EvidenceUploaderModal / EjectionBlocker 同级）
-// 触发方：EvidenceList 缩略图右上角"×"→ openUnbindModal() → governanceStore.unbindTarget 非 null
+// 触发方：EvidenceList / ImageGalleryModal 的"解绑"按钮
+//         → openUnbindModal() → governanceStore.unbindTarget 非 null
 //
 // 防呆设计：
 //   · 2 秒强制倒计时，期间确认按钮显示锁定态，无法点击
@@ -9,10 +10,16 @@
 //   · 解绑过程中禁用所有交互，防止重复点击
 //   · 背景蒙层 / 关闭按钮：处理中时均不响应
 //
+// ⚠️  行为说明（Soft Unbind）：
+//   本弹窗执行【软解绑】，凭证不会被物理删除。
+//   解绑后凭证进入【凭证池】（orphan 状态），可在治理中心 → 凭证管理 中查看。
+//   永久物理删除只能通过凭证池 UI 执行。
+//
 // 业务逻辑委托 governanceService.unbindEvidence：
-//   1. 删除 Storage 文件 + Firestore evidences 文档
-//   2. 查询剩余凭证数，若为 0 → isVerified 回退为 false（历史回改规则）
-//   3. 写入 transactionVersions 审计记录
+//   1. 凭证状态 ok → orphan（保留 Storage 文件和 Firestore 文档）
+//   2. 从 Transaction.receiptUrls 移除该 URL
+//   3. 若剩余凭证为 0 → isVerified 回退为 false（历史回改规则）
+//   4. 写入 transactionVersions 审计记录
 
 import { useState, useEffect }          from 'react'
 import { getDocs, query, collection, where } from 'firebase/firestore'
@@ -49,7 +56,7 @@ function CountdownRing({ current, total, size = 36 }: CountdownRingProps) {
         fill="none"
         stroke="currentColor"
         strokeWidth={3}
-        className="text-red-200"
+        className="text-amber-200"
       />
       {/* 进度圈 */}
       <circle
@@ -60,7 +67,7 @@ function CountdownRing({ current, total, size = 36 }: CountdownRingProps) {
         strokeLinecap="round"
         strokeDasharray={circumference}
         strokeDashoffset={dashOffset}
-        className="text-red-500 transition-[stroke-dashoffset] duration-1000 ease-linear"
+        className="text-amber-500 transition-[stroke-dashoffset] duration-1000 ease-linear"
       />
     </svg>
   )
@@ -171,8 +178,8 @@ export default function UnbindingModal() {
     >
       <div className="w-full max-w-sm bg-surface-primary rounded-2xl shadow-2xl overflow-hidden">
 
-        {/* ── 顶部警告色带（渐变）── */}
-        <div className="h-1 w-full bg-gradient-to-r from-red-500 via-orange-400 to-red-500" />
+        {/* ── 顶部色带（渐变）── */}
+        <div className="h-1 w-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400" />
 
         {/* ── 头部 ── */}
         <div className="flex items-start justify-between px-5 pt-5 pb-1">
@@ -181,7 +188,7 @@ export default function UnbindingModal() {
             <div>
               <h2 className="text-base font-bold text-content-primary">确认解绑凭证？</h2>
               <p className="text-[11px] text-content-tertiary mt-0.5">
-                文件将从云端永久删除，并写入审计记录
+                凭证将保留至凭证池，可在治理中心找回
               </p>
             </div>
           </div>
@@ -239,17 +246,17 @@ export default function UnbindingModal() {
             </div>
           )}
 
-          {/* ── 主警告区 ── */}
-          <div className="px-3 py-3 bg-red-50 border border-red-200 rounded-xl space-y-2">
+          {/* ── 主说明区（Soft Unbind 语义）── */}
+          <div className="px-3 py-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
 
-            {/* 基础警告 */}
-            <p className="text-xs text-red-700 leading-relaxed">
-              🗑 凭证文件将从 <strong>Firebase Storage</strong> 和数据库中<strong>永久删除</strong>，此操作不可撤销。系统将同步写入操作审计记录。
+            {/* 软解绑说明 */}
+            <p className="text-xs text-amber-800 leading-relaxed">
+              💔 凭证将从该账单<strong>解除关联</strong>，并以 <strong>orphan（孤立）</strong> 状态保留在凭证池中。文件不会被删除，可在「治理中心 → 凭证管理」中找回或重新挂载。
             </p>
 
             {/* 最后一张凭证额外警告（查询完成后才显示，避免闪烁）*/}
             {isLastEvidence === true && (
-              <div className="pt-2 border-t border-red-200">
+              <div className="pt-2 border-t border-amber-200">
                 <p className="text-xs text-orange-700 font-semibold leading-relaxed">
                   ⚡ 这是该账单的<strong>最后一张凭证</strong>。
                 </p>
@@ -298,8 +305,8 @@ export default function UnbindingModal() {
               'flex items-center justify-center gap-2',
               'transition-all duration-300',
               canConfirm
-                ? 'bg-red-500 hover:bg-red-600 active:bg-red-700 text-white shadow-sm cursor-pointer'
-                : 'bg-red-100 text-red-300 cursor-not-allowed',
+                ? 'bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white shadow-sm cursor-pointer'
+                : 'bg-amber-100 text-amber-300 cursor-not-allowed',
             ].join(' ')}
           >
             {isProcessing ? (
@@ -317,8 +324,8 @@ export default function UnbindingModal() {
             ) : (
               // 可点击状态
               <>
-                <span className="text-base leading-none">🗑</span>
-                <span>确认永久删除</span>
+                <span className="text-base leading-none">💔</span>
+                <span>确认解绑（保留至凭证池）</span>
               </>
             )}
           </button>

@@ -2,6 +2,7 @@
 // 数据流：Firestore → onSnapshot → billStore/ledgerStore → useBills → UI
 
 import { useState, useMemo } from 'react'
+import { useNavigate }       from 'react-router-dom'
 import {
   StatCardsSkeleton,
   ChartSkeleton,
@@ -11,7 +12,8 @@ import ImportModal           from '@/components/import/ImportModal'
 import LedgerSwitcher        from '@/components/ledger/LedgerSwitcher'
 import LedgerManagerModal    from '@/components/ledger/LedgerManagerModal'
 import CorrectionPolicyModal from '@/components/ledger/CorrectionPolicyModal'
-import OmniInputModal        from '@/components/input/OmniInputModal'
+import OmniInputModal, { type EditSaveData }  from '@/components/input/OmniInputModal'
+import TransactionDetailModal                 from '@/components/ui/TransactionDetailModal'
 import MonthlyBarChart       from '@/components/statistics/MonthlyBarChart'
 import CategoryPieChart      from '@/components/statistics/CategoryPieChart'
 import StatCards             from '@/components/statistics/StatCards'
@@ -31,6 +33,14 @@ import { toChineseDate } from '@/utils/dateUtils'
 import ThemeToggle        from '@/components/ui/ThemeToggle'
 import SearchBar          from '@/components/ui/SearchBar'
 import { useSearchBills } from '@/hooks/useSearchBills'
+
+// 批量删除服务
+import { batchDeleteTransactionsDeep } from '@/services/firebase/billService'
+import { updateTransaction }           from '@/services/firebase/billService'
+
+// 共享 UI 组件
+import { ThumbnailImage } from '@/components/ui/StorageImage'
+import { StorageImage }   from '@/components/ui/StorageImage'
 
 // 类型
 import type { Transaction }                        from '@/types/Transaction.types'
@@ -98,154 +108,180 @@ interface BillItemProps {
   transaction: Transaction
   onCorrect:   (tx: Transaction) => void
   onDelete:    (id: string) => Promise<void>
+  onDetail:    (tx: Transaction) => void   // 点击主体区域 → 只读详情卡片
+  isSelected:  boolean
+  onToggle:    (id: string) => void
 }
 
-function BillItem({ transaction: tx, onCorrect, onDelete }: BillItemProps) {
+function BillItem({ transaction: tx, onCorrect, onDelete, onDetail, isSelected, onToggle }: BillItemProps) {
   const { icon, bg } = getCategoryMeta(tx.category)
-  const isIncome     = tx.amount > 0
+  const isIncome = tx.amount > 0
 
-  // 内联二次确认状态机
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [isDeleting,    setIsDeleting]    = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
+
+  const receipts = tx.receiptUrls ?? []
+
+  const rawLegacy = tx.rawData?.['legacy_backup'] as Record<string, unknown> | undefined
+  // For V2 migrated records, tx.description was incorrectly set to category name as fallback.
+  // The real summary lives in rawData.legacy_backup.summary.
+  // Priority: legacy_backup.summary > tx.description (only if it differs from category) > category
+  const legacySummary = rawLegacy?.['summary'] as string | undefined
+  const descNotCategory = tx.description !== tx.category ? tx.description : ''
+  const displayDesc = legacySummary || descNotCategory || tx.description || '无摘要'
+
+  const amountColor = isIncome ? 'text-income' : 'text-expense'
+  const sourceLabel =
+    tx.source === 'wechat'  ? '微信'   :
+    tx.source === 'alipay'  ? '支付宝' :
+    tx.source === 'manual'  ? '手动'   : '银行'
 
   async function handleDeleteConfirm() {
     setIsDeleting(true)
     try {
       await onDelete(tx.id)
-      // 不需要手动移除 — onSnapshot 会让该条从列表消失
     } catch {
-      // 删除失败则退出确认态，让用户看到错误
       setIsDeleting(false)
       setConfirmDelete(false)
     }
   }
 
   return (
-    <div className="flex items-center gap-3 py-3 px-1 group">
-
-      {/* 分类图标 */}
-      <div className={`w-10 h-10 rounded-full ${bg} flex items-center justify-center flex-shrink-0 text-lg`}>
-        {icon}
-      </div>
-
-      {/* 描述 + 分类 + 日期 */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium text-slate-800 truncate">
-            {tx.description}
-          </p>
-          {/* 血缘标记：该账单是跨账套克隆副本时显示（SX 阶段完整实现） */}
-          {tx.clonedFromId && tx.sourceLedgerId && (
-            <span className="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5
-                             bg-violet-50 text-violet-500 rounded-full border border-violet-100">
-              ↗ 副本
-            </span>
-          )}
-          {/* 人工修正标记 */}
-          {tx.isManuallyEdited && (
-            <span className="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5
-                             bg-amber-50 text-amber-500 rounded-full border border-amber-100">
-              已纠偏
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-slate-500 mt-0.5">
-          <span>{tx.category}</span>
-          <span className="mx-1.5 opacity-40">·</span>
-          <span>{toChineseDate(tx.date)}</span>
-          {/* 标签（最多显示 2 个） */}
-          {tx.tags && tx.tags.length > 0 && (
-            <>
-              <span className="mx-1.5 opacity-40">·</span>
-              {tx.tags.slice(0, 2).map(tag => (
-                <span key={tag} className="mr-1 text-primary-400">#{tag}</span>
-              ))}
-            </>
-          )}
-        </p>
-      </div>
-
-      {/* ── 右侧操作区 ────────────────────────────────────── */}
-
-      {/* 二次确认态：展开删除提示 */}
-      {confirmDelete ? (
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-[11px] font-semibold text-red-500">确认删除?</span>
-          {/* 确认 ✓ */}
+    <>
+      {lightboxOpen && receipts[0] && (
+        <div
+          className="fixed inset-0 z-[700] flex items-center justify-center bg-black/85 backdrop-blur-sm"
+          onClick={() => setLightboxOpen(false)}
+        >
           <button
-            onClick={handleDeleteConfirm}
-            disabled={isDeleting}
-            title="确认删除"
-            className="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center
-                       text-xs font-bold hover:bg-red-600 disabled:opacity-50 transition-colors"
+            className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center rounded-full bg-white/15 text-white text-xl hover:bg-white/25 z-10"
+            onClick={() => setLightboxOpen(false)}
           >
-            {isDeleting ? (
-              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            ) : '✓'}
+            ×
           </button>
-          {/* 取消 ✗ */}
-          <button
-            onClick={() => setConfirmDelete(false)}
-            disabled={isDeleting}
-            title="取消"
-            className="w-6 h-6 rounded-full bg-gray-200 text-gray-500 flex items-center justify-center
-                       text-xs font-bold hover:bg-gray-300 disabled:opacity-50 transition-colors"
-          >
-            ✗
-          </button>
-        </div>
-      ) : (
-        /* 正常态：hover 显示操作按钮 + 金额 */
-        <div className="flex items-center gap-2 flex-shrink-0">
-
-          {/* 🗑️ 删除按钮（hover 可见，红色调） */}
-          <button
-            onClick={() => setConfirmDelete(true)}
-            title="删除此账单"
-            className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
-                       text-slate-500 hover:text-red-500 hover:bg-red-50
-                       transition-all opacity-0 group-hover:opacity-100"
-          >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
-
-          {/* ✏️ 纠偏按钮（hover 可见） */}
-          <button
-            onClick={() => onCorrect(tx)}
-            title="纠偏分类"
-            className="w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center
-                       text-slate-500 hover:text-primary-600 hover:bg-primary-50
-                       transition-all opacity-0 group-hover:opacity-100"
-          >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-            </svg>
-          </button>
-
-          {/* 金额 + 来源 */}
-          <div className="text-right">
-            <span className={`text-sm font-semibold tabular-nums
-              ${isIncome ? 'text-income' : 'text-slate-800'}`}>
-              {isIncome ? '+' : '-'}¥{formatAmount(Math.abs(tx.amount))}
-            </span>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              {tx.source === 'wechat'  ? '微信'   :
-               tx.source === 'alipay'  ? '支付宝' :
-               tx.source === 'manual'  ? '手动'   : '银行'}
-            </p>
-          </div>
-
+          <StorageImage
+            path={receipts[0]}
+            alt="receipt"
+            className="max-w-[92vw] max-h-[82vh] rounded-xl object-contain shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          />
         </div>
       )}
 
-    </div>
+      <div className={`flex items-center gap-2 py-2 px-2 group transition-colors ${isSelected ? 'bg-surface-overlay' : ''}`}>
+
+        <div className="flex-shrink-0 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => onToggle(tx.id)}
+            className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all flex-shrink-0 ${
+              isSelected
+                ? 'bg-primary-600 border-primary-600'
+                : 'border-slate-400 hover:border-primary-500'
+            }`}
+            aria-label="select"
+          >
+            {isSelected && (
+              <svg className="w-2.5 h-2.5 text-content-inverse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </button>
+          <div className={`w-7 h-7 rounded-full ${bg} flex items-center justify-center flex-shrink-0 overflow-hidden text-xs leading-none`}>
+            {icon}
+          </div>
+        </div>
+
+        {/* 中间内容区：点击 → 只读详情卡片（非功能区点击缓冲）*/}
+        <div
+          className="flex-1 min-w-0 overflow-hidden cursor-pointer"
+          onClick={() => onDetail(tx)}
+        >
+          <p className="text-[13px] font-bold text-slate-800 truncate leading-snug">{displayDesc}</p>
+          {tx.remark ? (
+            <p className="text-[10px] text-content-secondary truncate mt-px leading-snug italic">💬 {tx.remark}</p>
+          ) : null}
+          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+            <span className="text-[10px] text-content-tertiary">{tx.category}</span>
+            <span className="text-[10px] text-content-tertiary opacity-40">·</span>
+            <span className="text-[10px] text-content-tertiary">{toChineseDate(tx.date)}</span>
+            {tx.sourceType === 'V2_to_V3' && (
+              <span className="text-[9px] font-semibold px-1 py-px rounded bg-indigo-50 text-indigo-500 border border-indigo-100">V2</span>
+            )}
+            {tx.isManuallyEdited && (
+              <span className="text-[9px] font-semibold px-1 py-px rounded bg-amber-50 text-amber-500 border border-amber-100">纠偏</span>
+            )}
+            {tx.clonedFromId && tx.sourceLedgerId && (
+              <span className="text-[9px] font-semibold px-1 py-px rounded bg-violet-50 text-violet-500 border border-violet-100">副本</span>
+            )}
+            {tx.tags && tx.tags.slice(0, 2).map(tag => (
+              <span key={tag} className="text-[9px] text-primary-400">#{tag}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* 右侧固定宽度容器：缩略图 + 操作按钮 + 金额，强制靠右垂直对齐 */}
+        <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+          <ThumbnailImage
+            urls={receipts}
+            sizeClass="w-9 h-9"
+            onClick={e => { e.stopPropagation(); setLightboxOpen(true) }}
+          />
+
+          {confirmDelete ? (
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] font-semibold text-red-500">确认?</span>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={isDeleting}
+                className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center text-[10px] font-bold hover:bg-red-600 disabled:opacity-50 transition-colors"
+              >
+                {isDeleting ? (
+                  <svg className="w-2.5 h-2.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : '✓'}
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                disabled={isDeleting}
+                className="w-5 h-5 rounded-full bg-gray-200 text-gray-500 flex items-center justify-center text-[10px] font-bold hover:bg-gray-300 disabled:opacity-50 transition-colors"
+              >✗</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setConfirmDelete(true)}
+                title="delete"
+                className="w-5 h-5 rounded-full flex items-center justify-center text-content-tertiary hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+              <button
+                onClick={() => onCorrect(tx)}
+                title="correct"
+                className="w-5 h-5 rounded-full flex items-center justify-center text-content-tertiary hover:text-primary-600 hover:bg-primary-50 transition-all opacity-0 group-hover:opacity-100"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+              </button>
+              <div className="text-right" style={{ minWidth: '56px' }}>
+                <p className={`text-sm font-bold tabular-nums ${amountColor}`}>
+                  {isIncome ? '+' : '\u2212'}¥{formatAmount(Math.abs(tx.amount))}
+                </p>
+                <p className="text-[9px] text-content-tertiary">{sourceLabel}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+      </div>
+    </>
   )
 }
 
@@ -260,6 +296,8 @@ interface CorrectionCtx {
 }
 
 function HomePage() {
+  const navigate = useNavigate()
+
   // ── 数据层：订阅 Zustand Store，账套切换时自动重渲染 ─────
   const {
     income, expense, net,
@@ -268,6 +306,20 @@ function HomePage() {
     correct, deleteOne,
   } = useBills()
   const { activeLedger } = useLedger()
+
+  // ── 全量活跃账单（非作废，全时间范围，最新优先）用于账单列表展示 ──
+  // 主要解决：历史迁移数据（如 V2→V3）日期在往月，thisMonthBills 无法展示
+  //
+  // 隔离规则：_migratedFromV2=true 且 isVerified≠true 的账单属于"待审核"队列
+  // 这批数据只在冲突中心可见，未经 forceAdd 审核前严禁出现在首页
+  const allActiveBills = useMemo(() =>
+    allLedgerBills
+      .filter(t => t.status !== 'void')
+      .filter(t => !(t.rawData['_migratedFromV2'] === true && t.isVerified !== true))
+      .sort((a, b) => b.date.localeCompare(a.date)),
+    [allLedgerBills]
+  )
+  const allActiveBillsCount = allActiveBills.length
 
   // ── 智慧看板数据：日均、分类占比、预算剩余、预计月支出 ──────────
   const {
@@ -286,24 +338,102 @@ function HomePage() {
   const [chartCollapsed, setChartCollapsed] = useState(true)
   const [showAllBills,   setShowAllBills]   = useState(false)
 
-  // ── 搜索状态（useSearchBills 在全月账单上做客户端过滤）───────
+  // ── 搜索状态（在全账套账单上做客户端过滤，覆盖历史数据）──────
   const {
     searchQuery, setSearchQuery, clearSearch,
     filteredBills: searchedBills, isSearching, matchCount,
-  } = useSearchBills(thisMonthBills)
+  } = useSearchBills(allActiveBills)
 
   // 账单展示优先级：搜索 > 分类筛选 > 默认 8 条 / 展开全量
+  // 使用 allActiveBills（全时间）而非 thisMonthBills，确保历史迁移数据可见
   const recentBills = useMemo(() => {
     if (isSearching)      return searchedBills
-    if (selectedCategory) return thisMonthBills.filter(t => t.category === selectedCategory)
-    return showAllBills ? thisMonthBills : thisMonthBills.slice(0, 8)
-  }, [thisMonthBills, selectedCategory, isSearching, searchedBills, showAllBills])
+    if (selectedCategory) return allActiveBills.filter(t => t.category === selectedCategory)
+    return showAllBills ? allActiveBills : allActiveBills.slice(0, 8)
+  }, [allActiveBills, selectedCategory, isSearching, searchedBills, showAllBills])
 
   // ── Toast 状态 ────────────────────────────────────────────
   const [toast, setToast] = useState<ToastData | null>(null)
   function showToast(msg: string, type: ToastData['type'] = 'success') {
     setToast({ msg, type })
-    setTimeout(() => setToast(null), 3000)
+    setTimeout(() => setToast(null), 4000)
+  }
+
+  // ── 批量选择状态 ──────────────────────────────────────────
+  const [selectedIds,     setSelectedIds]     = useState<Set<string>>(new Set())
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false)
+  const [batchProgress,   setBatchProgress]   = useState<{ done: number; total: number } | null>(null)
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+
+  const handleSelectAll = () => {
+    const visibleIds = recentBills.map(t => t.id)
+    const allSelected = visibleIds.every(id => selectedIds.has(id))
+    if (allSelected) {
+      // 全部已选 → 全部取消
+      setSelectedIds(new Set())
+    } else {
+      // 否则 → 选中全部可见账单
+      setSelectedIds(new Set(visibleIds))
+    }
+  }
+
+  // 批量物理删除：Transaction + evidences Firestore 文档 + Storage 文件
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return
+    const ids = Array.from(selectedIds)
+    const confirmed = window.confirm(
+      `确认永久删除选中的 ${ids.length} 条账单？\n\n` +
+      `· 账单文档将从 Firestore 移除\n` +
+      `· 关联凭证文件将从 Firebase Storage 物理删除\n\n` +
+      `此操作不可撤销！`
+    )
+    if (!confirmed) return
+
+    setIsBatchDeleting(true)
+    setBatchProgress({ done: 0, total: ids.length })
+    try {
+      const result = await batchDeleteTransactionsDeep(ids, (done, total) => {
+        setBatchProgress({ done, total })
+      })
+      setSelectedIds(new Set())
+      if (result.errors.length === 0) {
+        showToast(`✅ 已删除 ${result.deleted} 条账单（含 Storage 文件）`, 'success')
+      } else {
+        showToast(`⚠️ 删除 ${result.deleted} 条成功，${result.errors.length} 条失败`, 'warning')
+      }
+    } catch (e) {
+      showToast('批量删除失败，请重试', 'error')
+      console.error('[HomePage] 批量删除异常:', e)
+    } finally {
+      setIsBatchDeleting(false)
+      setBatchProgress(null)
+    }
+  }
+
+  // 解绑凭证：清空选中账单的 receiptUrls（保留 Storage 文件，保留账单）
+  const handleUnbindReceipts = async () => {
+    if (selectedIds.size === 0) return
+    const ids = Array.from(selectedIds)
+    const confirmed = window.confirm(
+      `确认解绑选中 ${ids.length} 条账单的凭证关联？\n\n` +
+      `· 仅清除账单上的照片链接，不删除 Storage 文件\n` +
+      `· 账单本体保留`
+    )
+    if (!confirmed) return
+    try {
+      await Promise.all(ids.map(id => updateTransaction(id, { receiptUrls: [] })))
+      setSelectedIds(new Set())
+      showToast(`✅ 已解绑 ${ids.length} 条账单的凭证`, 'success')
+    } catch (e) {
+      showToast('解绑失败，请重试', 'error')
+      console.error('[HomePage] 解绑凭证异常:', e)
+    }
   }
 
   // ── 弹窗状态 ──────────────────────────────────────────────
@@ -312,16 +442,81 @@ function HomePage() {
   const [correctionCtx,   setCorrectionCtx]   = useState<CorrectionCtx | null>(null)
   const [omniOpen,        setOmniOpen]        = useState(false)
   const [managerOpen,     setManagerOpen]     = useState(false)
+  const [editTx,          setEditTx]          = useState<Transaction | null>(null)
+  const [detailTx,        setDetailTx]        = useState<Transaction | null>(null)
 
-  // ── 点击账单行的纠偏按钮 ─────────────────────────────────
+  // ── 点击铅笔按钮：打开修改弹窗（预填数据）────────────────
   function handleCorrect(tx: Transaction) {
-    const newCat = tx.category === '未分类' ? '餐饮' : '未分类'
-    setCorrectionCtx({ tx, field: '分类', oldValue: tx.category, newValue: newCat })
+    setEditTx(tx)
+    setOmniOpen(true)
+  }
+
+  // ── OmniInputModal 关闭（同时清空 editTx）────────────────
+  function handleOmniClose() {
+    setOmniOpen(false)
+    setEditTx(null)
+  }
+
+  // ── 编辑模式保存：严格三层物理隔离 ─────────────────────────
+  //
+  //  Layer 1  金额/说明/备注/日期变更（同收支类型，分类未变）→ 静默保存
+  //  Layer 2  收支类型互转（expense ↔ income）             → 静默保存（含自动分类，绝不弹窗）
+  //  Layer 3  同收支类型下用户主动改了分类                  → 唯一允许弹出 CorrectionPolicyModal
+  //
+  //  判断顺序：typeChanged 优先，阻断 Layer 3 的误触发
+  //  类型检测：用 amount 正负号推断，无需额外字段
+  // ──────────────────────────────────────────────────────────
+  async function handleSaveEdit(data: EditSaveData): Promise<void> {
+    if (!editTx) return
+
+    // 共用写入 patch（全字段合并，category 留到各分支按需追加）
+    const basePatch = {
+      amount:           data.amount,
+      date:             data.date,
+      description:      data.description,
+      remark:           data.remark,
+      isManuallyEdited: true,
+      ...(editTx.rawData?.['_migratedFromV2'] === true ? { isVerified: true } : {}),
+    }
+
+    // ── 收支类型检测：正数=收入，负数=支出 ──────────────────
+    // 正常路径：OmniInputModal 内部已通过 window.confirm 拦截并让用户确认，
+    // 到达此处时用户已明确知晓类型已切换，直接静默全量保存，绝不弹窗。
+    const originalIsIncome = editTx.amount > 0
+    const newIsIncome      = data.amount > 0
+    const typeChanged      = originalIsIncome !== newIsIncome
+
+    // ══ Layer 2：收支互转 → 静默全量保存（含新分类），严禁弹窗 ══
+    if (typeChanged) {
+      await updateTransaction(editTx.id, { ...basePatch, category: data.category })
+      showToast('✅ 已切换收支类型并保存', 'success')
+      setEditTx(null)
+      return
+    }
+
+    // ── 同收支类型下：检测分类是否改变 ──────────────────────
+    const categoryChanged = data.category !== editTx.category
+
+    // ══ Layer 1：分类未变 → 静默全量保存 ══
+    if (!categoryChanged) {
+      await updateTransaction(editTx.id, { ...basePatch, category: data.category })
+      showToast('✅ 修改成功', 'success')
+      setEditTx(null)
+      return
+    }
+
+    // ══ Layer 3：同类型 + 分类改变 → 先保存非分类字段，再弹出策略选择 ══
+    await updateTransaction(editTx.id, basePatch)
+    setCorrectionCtx({
+      tx:       editTx,
+      field:    '分类',
+      oldValue: editTx.category,
+      newValue: data.category,
+    })
+    setEditTx(null)
     setCorrectionOpen(true)
   }
 
-  // ── 纠偏弹窗确认（async：等待 Firestore 写入后关闭弹窗，批量时弹 Toast）
-  // 注意：CorrectionPolicyModal 内部 await 此函数，期间显示 ⏳ Loading
   async function handleCorrectionConfirm(policy: CorrectionPolicy): Promise<void> {
     if (!correctionCtx) return
     const intent: CorrectionIntent = {
@@ -332,12 +527,12 @@ function HomePage() {
       policy,
     }
     const matchedCount = await correct(policy, intent)
-    // 批量溯及既往时显示受影响计数 Toast
     if (policy === 'retroactive' && matchedCount > 1) {
       showToast(`已批量更新 ${matchedCount} 条历史记录`, 'success')
+    } else {
+      showToast('✅ 分类规则已应用', 'success')
     }
     setCorrectionCtx(null)
-    // 弹窗关闭由 CorrectionPolicyModal 内部 handleConfirm finally 负责
   }
 
   // ── 删除账单：调用 Firestore deleteDoc，绝不碰本地 Store ──
@@ -664,19 +859,78 @@ function HomePage() {
                  selectedCategory ? `「${selectedCategory}」账单`     : '最近账单'}
               </h2>
               <button
-                onClick={() => { setShowAllBills(true); setSelectedCategory(null) }}
+                onClick={() => navigate('/query')}
                 className="text-xs text-primary-600 font-medium hover:underline"
               >
                 查看全部 ›
               </button>
             </div>
-            <p className="text-xs text-slate-500 mb-3">
+            <p className="text-xs text-slate-500 mb-2">
               {isSearching
                 ? `找到 ${matchCount} 条匹配记录`
                 : selectedCategory
-                  ? `本月 ${selectedCategory} 共 ${recentBills.length} 笔 · 点击环形图空白区可清除筛选`
-                  : `本月共 ${totalCount} 笔记录 · 悬停可纠偏分类`}
+                  ? `${selectedCategory} 共 ${recentBills.length} 笔 · 点击环形图空白区可清除筛选`
+                  : `账套共 ${allActiveBillsCount} 条账单 · 悬停可纠偏分类`}
             </p>
+
+            {/* ── 批量操作工具栏 ── */}
+            <div className="flex items-center gap-1.5 mb-3 pb-2 border-b border-slate-100">
+
+              {/* 全选 / 取消全选 */}
+              <button
+                onClick={handleSelectAll}
+                disabled={isBatchDeleting || recentBills.length === 0}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium
+                            transition-colors disabled:opacity-40 ${
+                  recentBills.length > 0 && recentBills.every(t => selectedIds.has(t.id))
+                    ? 'bg-primary-100 text-primary-700 border border-primary-300'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {recentBills.length > 0 && recentBills.every(t => selectedIds.has(t.id))
+                  ? '✓ 全选'
+                  : '全选'}
+                {selectedIds.size > 0 && ` (${selectedIds.size})`}
+              </button>
+
+              {/* 删除（含 Storage 清理）*/}
+              <button
+                onClick={handleBatchDelete}
+                disabled={selectedIds.size === 0 || isBatchDeleting}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium
+                           transition-colors disabled:opacity-40
+                           bg-red-50 text-red-600 border border-red-200
+                           hover:bg-red-100 disabled:hover:bg-red-50"
+              >
+                {isBatchDeleting
+                  ? `删除中 ${batchProgress ? `${batchProgress.done}/${batchProgress.total}` : '…'}`
+                  : `🗑 删除${selectedIds.size > 0 ? `(${selectedIds.size})` : ''}`}
+              </button>
+
+              {/* 撤销 / 清除选择 */}
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                disabled={selectedIds.size === 0 || isBatchDeleting}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium
+                           transition-colors disabled:opacity-40
+                           bg-slate-100 text-slate-600 hover:bg-slate-200"
+              >
+                ↩ 撤销
+              </button>
+
+              {/* 解绑凭证（清空 receiptUrls，保留账单）*/}
+              <button
+                onClick={handleUnbindReceipts}
+                disabled={selectedIds.size === 0 || isBatchDeleting}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium
+                           transition-colors disabled:opacity-40
+                           bg-amber-50 text-amber-700 border border-amber-200
+                           hover:bg-amber-100 disabled:hover:bg-amber-50"
+              >
+                🔗 解绑
+              </button>
+
+            </div>{/* end 批量操作工具栏 */}
 
             <div>
               {recentBills.length > 0 ? (
@@ -686,6 +940,9 @@ function HomePage() {
                       transaction={tx}
                       onCorrect={handleCorrect}
                       onDelete={handleDeleteBill}
+                      onDetail={setDetailTx}
+                      isSelected={selectedIds.has(tx.id)}
+                      onToggle={toggleSelect}
                     />
                     {index < recentBills.length - 1 && (
                       <div className="divider ml-14" />
@@ -698,7 +955,7 @@ function HomePage() {
                   <p className="text-sm text-slate-500">
                     {isSearching
                       ? `未找到含「${searchQuery}」的账单`
-                      : `「${activeLedger?.name}」本月暂无账单`}
+                      : `「${activeLedger?.name}」暂无账单`}
                   </p>
                   <p className="text-xs text-slate-500 mt-1 opacity-70">
                     {isSearching ? '试试其他关键词' : '导入账单或手动记账后显示'}
@@ -708,18 +965,18 @@ function HomePage() {
             </div>
 
             {/* 无分类筛选时才展示"还有 X 条"提示 */}
-            {!selectedCategory && !showAllBills && totalCount > 8 && (
+            {!selectedCategory && !showAllBills && allActiveBillsCount > 8 && (
               <button
                 onClick={() => setShowAllBills(true)}
                 className="w-full mt-3 py-2.5 text-xs text-primary-600 font-medium
                            bg-primary-50 rounded-lg text-center hover:bg-primary-100
                            transition-colors"
               >
-                还有 {totalCount - 8} 条记录，点击展开全部 ›
+                还有 {allActiveBillsCount - 8} 条记录，点击展开全部 ›
               </button>
             )}
             {/* 展开全量时显示收起按钮 */}
-            {showAllBills && totalCount > 8 && (
+            {showAllBills && allActiveBillsCount > 8 && (
               <button
                 onClick={() => setShowAllBills(false)}
                 className="w-full mt-3 py-2.5 text-xs text-slate-500
@@ -748,10 +1005,20 @@ function HomePage() {
       </button>
 
       {/* ══ 弹窗挂载区 ════════════════════════════════════════ */}
+
+      {/* 账单只读详情卡片（点击账单行主体区域触发，编辑按钮再开修改表单）*/}
+      <TransactionDetailModal
+        tx={detailTx}
+        onClose={() => setDetailTx(null)}
+        onEdit={tx => { setDetailTx(null); handleCorrect(tx) }}
+      />
+
       <OmniInputModal
         isOpen={omniOpen}
-        onClose={() => setOmniOpen(false)}
+        onClose={handleOmniClose}
         showToast={showToast}
+        editTx={editTx ?? undefined}
+        onSaveEdit={handleSaveEdit}
       />
       <ImportModal
         isOpen={importOpen}

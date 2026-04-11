@@ -18,6 +18,7 @@ import {
 import { formatAmount }  from '@/utils/numberUtils'
 import { toChineseDate } from '@/utils/dateUtils'
 import type { Transaction } from '@/types/Transaction.types'
+import { TimeFilter, DEFAULT_TIME_FILTER, type TimeFilterValue } from '@/components/ui/TimeFilter'
 
 // ── 常量 ───────────────────────────────────────────────────────
 
@@ -39,16 +40,12 @@ function monthPrefix(offset = 0): string {
 // ── 主组件 ─────────────────────────────────────────────────────
 
 function QueryPage() {
-  // 筛选状态（用一个对象统管，方便重置）
-  const [filters, setFilters] = useState<QueryFilters>(DEFAULT_FILTERS)
-
-  // 当前月份快捷按钮选中态（'this'|'last'|'all'，影响 dateFrom/dateTo）
-  const [monthQuick, setMonthQuick] = useState<'this' | 'last' | 'all'>('all')
+  const [filters,    setFilters]    = useState<QueryFilters>(DEFAULT_FILTERS)
+  const [timeFilter, setTimeFilter] = useState<TimeFilterValue>(DEFAULT_TIME_FILTER)
 
   const { bills, totalCount, income, expense, billsReady } = useQueryBills(filters)
 
-  // ── 更新单个筛选字段 ────────────────────────────────────────
-  const setKeyword  = useCallback((kw: string) =>
+  const setKeyword   = useCallback((kw: string) =>
     setFilters(f => ({ ...f, keyword: kw })), [])
 
   const setDirection = useCallback((d: DirectionFilter) =>
@@ -57,29 +54,14 @@ function QueryPage() {
   const setCategory  = useCallback((cat: string | null) =>
     setFilters(f => ({ ...f, category: cat })), [])
 
-  // 月份快捷切换：同步更新 dateFrom / dateTo
-  const setMonthFilter = useCallback((mode: 'this' | 'last' | 'all') => {
-    setMonthQuick(mode)
-    if (mode === 'all') {
-      setFilters(f => ({ ...f, dateFrom: null, dateTo: null }))
-    } else {
-      const prefix  = monthPrefix(mode === 'this' ? 0 : -1)
-      const year    = parseInt(prefix.slice(0, 4))
-      const month   = parseInt(prefix.slice(5, 7))
-      // 月末最后一天
-      const lastDay = new Date(year, month, 0).getDate()
-      setFilters(f => ({
-        ...f,
-        dateFrom: `${prefix}-01`,
-        dateTo:   `${prefix}-${String(lastDay).padStart(2, '0')}`,
-      }))
-    }
+  const handleTimeChange = useCallback((tv: TimeFilterValue) => {
+    setTimeFilter(tv)
+    setFilters(f => ({ ...f, dateFrom: tv.dateFrom, dateTo: tv.dateTo }))
   }, [])
 
-  // 一键清空所有筛选
   const resetFilters = useCallback(() => {
     setFilters(DEFAULT_FILTERS)
-    setMonthQuick('all')
+    setTimeFilter(DEFAULT_TIME_FILTER)
   }, [])
 
   // 是否有任何筛选条件激活（用于显示「清空」按钮）
@@ -132,10 +114,8 @@ function QueryPage() {
           )}
         </div>
 
-        {/* 收支方向 + 月份快捷 */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-0.5 scrollbar-none">
-
-          {/* 收支方向 */}
+        {/* 收支方向 */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
           {(
             [
               { value: 'all',     label: '全部' },
@@ -148,37 +128,17 @@ function QueryPage() {
               onClick={() => setDirection(value)}
               className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
                 filters.direction === value
-                  ? 'bg-gray-900 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-
-          <div className="w-px h-4 bg-gray-200 flex-shrink-0 mx-1" />
-
-          {/* 月份快捷 */}
-          {(
-            [
-              { value: 'this' as const, label: '本月' },
-              { value: 'last' as const, label: '上月' },
-              { value: 'all'  as const, label: '全部时间' },
-            ]
-          ).map(({ value, label }) => (
-            <button
-              key={value}
-              onClick={() => setMonthFilter(value)}
-              className={`flex-shrink-0 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                monthQuick === value
-                  ? 'bg-primary-500 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  ? 'bg-content-primary text-content-inverse'
+                  : 'bg-surface-overlay text-content-secondary hover:bg-border'
               }`}
             >
               {label}
             </button>
           ))}
         </div>
+
+        {/* 时间筛选器 */}
+        <TimeFilter value={timeFilter} onChange={handleTimeChange} />
 
         {/* 分类 Chips（横向滚动） */}
         <div className="flex items-center gap-2 overflow-x-auto pb-0.5 scrollbar-none">
@@ -277,34 +237,37 @@ function BillRow({ tx, isLast }: BillRowProps) {
   const isIncome  = tx.amount > 0
   const absAmount = Math.abs(tx.amount)
 
+  const rawLegacy   = tx.rawData?.['legacy_backup'] as Record<string, unknown> | undefined
+  const legacySummary = rawLegacy?.['summary'] as string | undefined
+  const displayDesc =
+    legacySummary ||
+    (tx.description !== tx.category ? tx.description : '') ||
+    tx.description ||
+    '无摘要'
+
   return (
-    <div className={`flex items-center gap-3 px-4 py-3 ${!isLast ? 'border-b border-gray-50' : ''}`}>
-      {/* 分类图标 */}
-      <div className="w-9 h-9 rounded-xl bg-gray-50 flex items-center justify-center text-lg flex-shrink-0">
+    <div className={`flex items-center gap-2 px-3 py-2.5 ${!isLast ? 'border-b border-border-light' : ''}`}>
+      <div className="w-8 h-8 rounded-lg bg-surface-overlay flex items-center justify-center text-sm flex-shrink-0 overflow-hidden leading-none">
         {icon}
       </div>
 
-      {/* 描述 + 分类 + 日期 */}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-800 truncate">{tx.description}</p>
-        <p className="text-[11px] text-gray-400 mt-0.5">
-          <span>{tx.category}</span>
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <p className="text-[13px] font-bold text-slate-800 truncate leading-snug">{displayDesc}</p>
+        {tx.remark ? (
+          <p className="text-[10px] text-content-secondary truncate mt-px leading-snug italic">💬 {tx.remark}</p>
+        ) : null}
+        <p className="text-[10px] text-content-tertiary mt-0.5 truncate">
+          {tx.category}
           <span className="mx-1 opacity-40">·</span>
-          <span>{toChineseDate(tx.date)}</span>
-          {tx.isDuplicate && (
-            <>
-              <span className="mx-1 opacity-40">·</span>
-              <span className="text-yellow-500">疑似重复</span>
-            </>
-          )}
+          {toChineseDate(tx.date)}
+          {tx.isDuplicate && <span className="ml-1 text-amber-500">疑似重复</span>}
         </p>
       </div>
 
-      {/* 金额 */}
-      <span className={`flex-shrink-0 text-sm font-semibold tabular-nums ${
-        isIncome ? 'text-emerald-600' : 'text-gray-800'
+      <span className={`ml-auto flex-shrink-0 text-sm font-bold tabular-nums ${
+        isIncome ? 'text-income' : 'text-expense'
       }`}>
-        {isIncome ? '+' : '-'}¥{formatAmount(absAmount)}
+        {isIncome ? '+' : '\u2212'}¥{formatAmount(absAmount)}
       </span>
     </div>
   )

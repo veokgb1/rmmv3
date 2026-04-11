@@ -14,7 +14,8 @@ import {
 } from 'firebase/storage'
 import {
   collection, addDoc, deleteDoc, doc,
-  query, where, onSnapshot,
+  query, where, onSnapshot, getDoc, getDocs,
+  updateDoc, arrayRemove,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db, storage }   from '@/config/firebase'
@@ -211,3 +212,131 @@ export function subscribeEvidences(
     },
   )
 }
+
+// ════════════════════════════════════════════════════════════════
+// § 6  软解绑凭证（保留至凭证池，不物理删除）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * softUnbindEvidence — 将凭证从账单解绑并移入凭证池（软操作）
+ *
+ * 状态机：ok → orphan
+ *
+ * 执行步骤：
+ *   1. 读取凭证文档（获取 storageUrl 用于从 receiptUrls 移除）
+ *   2. 将凭证状态置为 orphan，清空 transactionId，记录解绑时间与原始账单 ID
+ *   3. 从 Transaction.receiptUrls 移除该 URL（arrayRemove，原子操作）
+ *   4. 查询该账单剩余 ok 状态凭证数量
+ *      若为 0：将 Transaction.isVerified 回退为 false（历史回改规则）
+ *
+ * ⚠️  本函数不写版本记录，版本审计由 governanceService.unbindEvidence 负责
+ *
+ * @param evidenceId  Firestore evidences 文档 ID
+ * @param txId        关联账单 Firestore 文档 ID
+ */
+export async function softUnbindEvidence(
+  evidenceId: string,
+  txId:       string,
+): Promise<void> {
+  // 步骤 1：读取凭证文档
+  const evRef  = doc(db, 'evidences', evidenceId)
+  const evSnap = await getDoc(evRef)
+  if (!evSnap.exists()) throw new Error(`凭证 ${evidenceId} 不存在或已被删除`)
+  const evData     = evSnap.data() as { storageUrl: string }
+  const storageUrl = String(evData.storageUrl ?? '')
+
+  const now = Date.now()
+
+  // 步骤 2：软更新凭证文档 → orphan 状态
+  await updateDoc(evRef, {
+    status:       'orphan',
+    transactionId: '',       // 解除账单关联
+    orphanedAt:   now,
+    originalTxId: txId,      // 保留来源账单 ID，供凭证池追踪
+  })
+
+  // 步骤 3：从 Transaction.receiptUrls 移除该 URL
+  const txRef = doc(db, 'transactions', txId)
+  await updateDoc(txRef, {
+    receiptUrls: arrayRemove(storageUrl),
+    updatedAt:   now,
+  })
+
+  // 步骤 4：检查剩余 ok 状态凭证，触发历史回改规则
+  const remainingSnap = await getDocs(
+    query(
+      collection(db, 'evidences'),
+      where('transactionId', '==', txId),
+      where('status', '==', 'ok'),
+    ),
+  )
+  if (remainingSnap.size === 0) {
+    await updateDoc(txRef, { isVerified: false })
+    console.debug(`[evidenceService] 剩余凭证为 0，回退 isVerified=false txId=${txId}`)
+  }
+
+  console.debug(`[evidenceService] 软解绑完成 evId=${evidenceId} → orphan 凭证池`)
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 7  订阅凭证池（Pool A: unprocessed / Pool B: orphan+replaced）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * subscribePoolEvidences — 实时订阅指定账套的凭证池
+ *
+ * Pool A（待处理收件箱）：status === 'unprocessed'（新上传，尚未关联任何账单）
+ * Pool B（解绑归档）：status === 'orphan' | 'replaced'（曾关联，已释放）
+ *
+ * 注意：此查询仅按 ledgerId 过滤，客户端按 status 分组。
+ * 生产环境建议在 Firestore 控制台为 (ledgerId, status) 创建复合索引以提升性能。
+ *
+ * @param ledgerId 账套 ID
+ * @param callback 每次变更触发，接收分组后的 poolA / poolB 数组
+ */
+export function subscribePoolEvidences(
+  ledgerId: string,
+  callback: (poolA: Evidence[], poolB: Evidence[]) => void,
+): Unsubscribe {
+  const q = query(
+    collection(db, 'evidences'),
+    where('ledgerId', '==', ledgerId),
+  )
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const all = snap.docs.map(d => ({ ...d.data(), id: d.id }) as Evidence)
+
+      // Pool A：unprocessed，按上传时间倒序（最新在前）
+      const poolA = all
+        .filter(e => e.status === 'unprocessed')
+        .sort((a, b) => b.uploadedAt - a.uploadedAt)
+
+      // Pool B：orphan + replaced，按解绑时间倒序
+      const poolB = all
+        .filter(e => e.status === 'orphan' || e.status === 'replaced')
+        .sort((a, b) => (b.orphanedAt ?? b.uploadedAt) - (a.orphanedAt ?? a.uploadedAt))
+
+      callback(poolA, poolB)
+    },
+    (err) => {
+      console.error('[evidenceService] 凭证池订阅错误:', err.message)
+    },
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 8  硬删除凭证（仅凭证池 UI 调用，物理删除 Storage + Firestore）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * hardDeleteEvidence — 永久删除凭证（Storage 文件 + Firestore 文档双删）
+ *
+ * ⚠️  此函数只应由凭证池 UI 调用，绝不在主账单流程中使用。
+ *     主账单流程解绑凭证应使用 softUnbindEvidence（保留至凭证池）。
+ *
+ * @param evidenceId  Firestore evidences 文档 ID
+ * @param storagePath Firebase Storage 存储路径
+ */
+export const hardDeleteEvidence = deleteEvidence

@@ -18,9 +18,11 @@ import {
 }                           from '@/services/firebase/billService'
 import type { Transaction, CorrectionPolicy, CorrectionIntent } from '@/types/Transaction.types'
 
-// ── 当月前缀计算 ───────────────────────────────────────────────
-const now = new Date()
-const THIS_MONTH_PREFIX = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+// ── 当月前缀计算（函数，每次调用时按实时时钟计算，避免跨月缓存问题）
+function getThisMonthPrefix(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+}
 
 // ── Hook 返回值接口 ─────────────────────────────────────────────
 export interface UseBillsReturn {
@@ -60,11 +62,12 @@ export function useBills(): UseBillsReturn {
       .sort((a, b) => a.date.localeCompare(b.date))
   ), [allTransactions, activeLedgerId])
 
-  const thisMonthBills = useMemo(() => (
-    allLedgerBills
-      .filter(t => t.date.startsWith(THIS_MONTH_PREFIX))
+  const thisMonthBills = useMemo(() => {
+    const prefix = getThisMonthPrefix()
+    return allLedgerBills
+      .filter(t => t.date.startsWith(prefix))
       .sort((a, b) => b.date.localeCompare(a.date))
-  ), [allLedgerBills])
+  }, [allLedgerBills])
 
   const income = useMemo(() => (
     thisMonthBills.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)

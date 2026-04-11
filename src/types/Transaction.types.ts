@@ -83,7 +83,8 @@ export interface Transaction {
   amount:       number    // 金额（正数=收入，负数=支出）
   category:     string    // 一级分类（对应 SystemCategory）
   subCategory?: string    // 二级分类 ID（关联 CustomCategory.id，可选）
-  description:  string    // 交易描述/备注
+  description:  string    // 交易摘要/说明（主描述）
+  remark?:      string    // 用户备注（说明二，可选；历史数据缺失时 undefined，渲染时留空）
 
   // ── § 3.4 多维标签（战略支柱①：自由标签体系） ───────────
   /**
@@ -262,7 +263,7 @@ export type TransactionInput = Omit<
  */
 export type TransactionUpdate = Partial<
   Pick<Transaction,
-    | 'date' | 'amount' | 'category' | 'subCategory' | 'description'
+    | 'date' | 'amount' | 'category' | 'subCategory' | 'description' | 'remark'
     | 'tags' | 'accountId' | 'status'
     | 'isVerified' | 'isDuplicate' | 'ocrStatus'
   >
