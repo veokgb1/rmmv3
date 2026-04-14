@@ -77,17 +77,18 @@ function jsonOutputRules(): string {
 
 JSON 字段规则：
 {
-  "amount": 数字（金额，正数，不含货币符号，如 38.5），
+  "amount": 数字（金额，正数，不含货币符号，如 38.5）。手写数字识别规则：零=0、一/壹=1、二/两/贰=2、三/叁=3、四/肆=4、五/伍=5、六/陆=6、七/柒=7、八/捌=8、九/玖=9、十=10、百=100、千=1000。**此字段必填，绝不能为 null 或 0**，
+  "currency": "CNY",
   "category": "从以下选项中选择最匹配的一个（只能选这些，不能创造新值）：餐饮、交通、购物、娱乐、医疗、居住、教育、工资、副业收入、理财收益、转账、未分类",
   "date": "日期，严格使用 YYYY-MM-DD 格式。若无明确日期则使用今天：${todayStr()}",
-  "notes": "简洁描述（不超过20字，如"星巴克拿铁"或"昨天打车"）"
+  "notes": "简洁精准的描述（不超过20字，直接提取图中的消费品名/商家名/活动名，如"星巴克拿铁"、"滴滴打车"、"超市购物"）"
 }
 
 分类选择参考：
-- 餐饮：餐厅、外卖、咖啡、奶茶、超市食品
-- 交通：地铁、公交、打车、加油、停车
-- 购物：服装、电子产品、日用品、网购
-- 娱乐：电影、KTV、游戏、健身
+- 餐饮：餐厅、外卖、咖啡、奶茶、超市食品、吃饭
+- 交通：地铁、公交、打车、加油、停车、滴滴
+- 购物：服装、电子产品、日用品、网购、超市日用
+- 娱乐：电影、KTV、游戏、健身、旅游
 - 医疗：药店、医院、诊所
 - 居住：房租、水电、物业
 - 教育：书籍、课程、培训`
@@ -97,19 +98,61 @@ JSON 字段规则：
 // Prompt A — 视觉小票解析（图片模态）
 // ─────────────────────────────────────────────────────────────
 // 设计原则：
-//   1. 角色扮演 → 提升分类精准度
-//   2. 穷举合法分类 → 杜绝模型"发明"新分类
-//   3. 强调"纯 JSON 无 Markdown" → 避免 ```json 包裹导致解析失败
-//   4. 提供今天日期作为 fallback → 防止无日期小票返回 null
+//   1. 超级 OCR 模式：手写潦草字专项激活，明确要求推断而非放弃
+//   2. 角色扮演 → 提升分类精准度
+//   3. 穷举合法分类 → 杜绝模型"发明"新分类
+//   4. 强调"纯 JSON 无 Markdown" → 避免 ```json 包裹导致解析失败
+//   5. 提供今天日期作为 fallback → 防止无日期小票返回 null
+//   6. 杂质过滤指引 → 忽略纸张边缘/背景/人影等无关内容
 // ─────────────────────────────────────────────────────────────
 function buildPrompt(): string {
-  return `你是一位专业财务助理和收据分析专家，擅长从各类账单、小票、收据图片中提取关键财务信息。
+  return `你是一位顶级的财务 OCR 专家，具备超强的手写文字识别能力，专门从各类账单、小票、手写记账本图片中提取关键财务信息。
 
-请仔细分析这张图片中的账单/小票，提取以下信息并以纯 JSON 格式返回。
+## 🔍 超级 OCR 模式（最高优先级）
 
-${jsonOutputRules()}
+**你必须执行以下 OCR 策略，无论图像质量如何：**
 
-现在请分析图片并直接返回 JSON：`
+1. **强制推断手写潦草字**：即使图像中的文字是极其潦草、连笔、歪斜、模糊的手写草稿，你也必须优先尝试光学字符识别（OCR）。绝对不能因为"字迹不清楚"就放弃识别——要根据上下文（数字大小、常见消费品名称、金额范围）进行合理推断，给出你认为最可能的答案。
+
+2. **提取所有行，绝不丢弃**：图片中有几行记录就提取几行，不要只取第一行或最大金额的那行。每一行独立的"描述 + 金额"组合都是一条独立记录。
+
+3. **聚焦数字与消费内容**：重点扫描图像中所有看起来像"金额数字"（含¥、元、块等货币符号周围的数字）或"消费描述"（商品名、商家名、消费类目）的区域，哪怕字迹潦草也要尝试识别。
+
+4. **自动过滤干扰因素**：主动忽略以下内容：纸张边缘、折痕、阴影、手指、水印、背景花纹、模糊的非财务文字。只关注与金额和消费描述直接相关的内容。
+
+5. **多候选推断**：如果某个字符有歧义（例如"8"和"6"形状相似），请结合周围数字的语境（如常见消费金额范围）选择最合理的判断。
+
+6. **手写特征识别**：中国用户手写记账时常见格式包括：
+   - 表格式多行记账本：每行"描述 金额"或"金额 描述"
+   - "XXX 元 / XX.X" 的金额写法
+   - "吃饭/打车/买X" 等口语化描述
+   - 日期格式如"X月X日"、"X/X"
+
+## 📋 你的任务
+
+分析这张图片，识别**所有**可见的消费记录（不论几条），每条记录单独提取，并以 JSON **数组**格式一次性返回全部结果。
+
+⚠️ 输出格式要求（极度重要，严格遵守）：
+- 只返回一个 JSON **数组** [ {...}, {...}, ... ]
+- 即使只识别到 1 条记录，也必须以数组形式返回：[{...}]
+- 绝对不要包含 Markdown 代码块标记（如 \`\`\`json）
+- 不要在数组前后加任何说明文字，直接输出 [ ... ]
+
+每条记录的 JSON 字段：
+{
+  "amount": 数字（金额，正数，不含货币符号，如 38.5）。手写汉字数字转换：零→0、十→10、百→100、千→1000，"三十五"→35，"两百"→200。**此字段必填，绝不能为 null 或 0**，
+  "category": "从以下选项中选择最匹配的一个（只能选这些）：餐饮、交通、购物、娱乐、医疗、居住、教育、工资、副业收入、理财收益、转账、未分类",
+  "date": "日期，严格使用 YYYY-MM-DD 格式。若无明确日期则使用今天：${todayStr()}",
+  "notes": "简洁精准的描述，直接来自图片中该行的文字内容（不超过20字）"
+}
+
+分类参考：餐饮=吃饭/外卖/咖啡，交通=打车/地铁/加油，购物=超市/网购/服装，娱乐=电影/游戏/健身，医疗=药/医院，居住=房租/水电，教育=书/课程
+
+## ⚡ 最终指令
+
+**即使你对某个字段不完全确定，也必须给出你最佳推断的答案，绝不能返回空数组。** 图片中有几行就返回几条，你的完整提取能力是这个系统的核心价值所在。
+
+现在请分析图片并直接返回 JSON 数组：`
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -153,17 +196,81 @@ ${jsonOutputRules()}
 }
 
 // ─────────────────────────────────────────────────────────────
-// analyzeReceipt — 核心公开方法
+// 内部工具：将 Gemini 图片识别原始文本解析为 ReceiptAnalysisResult[]
+// 专为 analyzeReceipt 使用（数组格式，与 parseGeminiJson 单体版平行）
+// ─────────────────────────────────────────────────────────────
+function parseGeminiJsonArray(rawText: string): ReceiptAnalysisResult[] {
+  // 清洗步骤 1：去除 Markdown 代码块
+  let cleaned = rawText
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim()
+
+  // 清洗步骤 2：从文本中提取第一个 [...] 数组块（处理 Gemini 2.5 思考链前缀）
+  const arrMatch = cleaned.match(/\[[\s\S]*\]/)
+  if (arrMatch) cleaned = arrMatch[0]
+
+  // 尝试解析：若模型意外返回单对象，包裹成数组
+  let parsed: unknown[]
+  try {
+    const raw = JSON.parse(cleaned)
+    parsed = Array.isArray(raw) ? raw : [raw]
+  } catch {
+    console.error('[aiService·image] Gemini 返回了非法 JSON：', rawText)
+    throw new Error('AI 返回结果格式异常，请重新拍照或手动录入')
+  }
+
+  const VALID_CATEGORIES: SystemCategory[] = [
+    '餐饮','交通','购物','娱乐','医疗','居住','教育',
+    '工资','副业收入','理财收益','转账','未分类',
+  ]
+  const today = todayStr()
+  const results: ReceiptAnalysisResult[] = []
+
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as Record<string, unknown>
+
+    const amount = typeof obj.amount === 'number'
+      ? obj.amount
+      : parseFloat(String(obj.amount ?? '0'))
+
+    // 金额无效的条目跳过（不影响其他条目）
+    if (isNaN(amount) || amount <= 0) continue
+
+    const rawCat  = String(obj.category ?? '')
+    const category: SystemCategory = VALID_CATEGORIES.includes(rawCat as SystemCategory)
+      ? (rawCat as SystemCategory)
+      : '未分类'
+
+    const rawDate = String(obj.date ?? '')
+    const date    = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : today
+
+    const notes   = String(obj.notes ?? '').slice(0, 50) || category
+
+    results.push({ amount, category, date, notes })
+  }
+
+  if (results.length === 0) {
+    throw new Error('AI 未能识别出有效金额，请重新拍照或手动录入')
+  }
+
+  console.info(`[aiService·image] 从图片中解析出 ${results.length} 条账单`)
+  return results
+}
+
+// ─────────────────────────────────────────────────────────────
+// analyzeReceipt — 核心公开方法（批量版）
 //
 // @param base64Image  图片的纯 Base64 字符串（不含 data:image/xxx;base64, 前缀）
 // @param mimeType     图片 MIME 类型（如 'image/jpeg' / 'image/png'）
-// @returns            结构化的账单分析结果
+// @returns            结构化账单数组（1 张图可返回多条记录）
 // @throws             API 调用失败或 JSON 解析失败时抛出带语义的 Error
 // ─────────────────────────────────────────────────────────────
 export async function analyzeReceipt(
   base64Image: string,
   mimeType    = 'image/jpeg',
-): Promise<ReceiptAnalysisResult> {
+): Promise<ReceiptAnalysisResult[]> {
 
   if (!GEMINI_API_KEY) {
     throw new Error('未配置 VITE_GEMINI_API_KEY，无法调用 AI 功能')
@@ -180,7 +287,6 @@ export async function analyzeReceipt(
     rawText = response.response.text().trim()
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    // 区分网络错误和 API 限额
     if (msg.includes('quota') || msg.includes('429')) {
       throw new Error('AI 请求配额已用完，请稍后再试')
     }
@@ -190,13 +296,9 @@ export async function analyzeReceipt(
     throw new Error(`AI 服务暂时不可用：${msg.slice(0, 80)}`)
   }
 
-  // ── 解析 JSON（与 parseVoiceRecord 共享 parseGeminiJson 工具）
-  // parseGeminiJson 定义在下方，此处先调用（JS hoisting 不适用于函数表达式，
-  // 但 function 声明会被提升，因此在同文件后定义的函数可以在此处调用）
-  const result = parseGeminiJson(rawText, '重新拍照或手动录入')
-
-  console.info('[aiService·vision] Gemini 解析成功：', result)
-  return result
+  const results = parseGeminiJsonArray(rawText)
+  console.info('[aiService·vision] Gemini 批量解析成功：', results)
+  return results
 }
 
 // ─────────────────────────────────────────────────────────────

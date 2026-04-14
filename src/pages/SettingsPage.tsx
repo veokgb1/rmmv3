@@ -2,12 +2,14 @@
 // 新增：真实用户信息卡片 / 账套管理入口 / 登出按钮
 // 数据来源：useAuthStore（Firebase Auth 用户对象）
 
-import { useState }          from 'react'
-import { useAuthStore }      from '@/store/authStore'
-import { logout }            from '@/services/authService'
-import { useLedger }         from '@/hooks/useLedger'
-import LedgerManagerModal    from '@/components/ledger/LedgerManagerModal'
-import V2ImportModal         from '@/components/import/V2ImportModal'
+import { useState }               from 'react'
+import { useAuthStore }           from '@/store/authStore'
+import { useLedgerStore }         from '@/store/ledgerStore'
+import { logout }                 from '@/services/authService'
+import { useLedger }              from '@/hooks/useLedger'
+import LedgerManagerModal         from '@/components/ledger/LedgerManagerModal'
+import V2ImportModal              from '@/components/import/V2ImportModal'
+import DataManagementCenter       from '@/features/settings/DataManagementCenter'
 
 // ── 占位菜单项（未来阶段实现）─────────────────────────────────
 type SettingItem = {
@@ -30,8 +32,9 @@ const FUTURE_GROUPS: { title: string; items: SettingItem[] }[] = [
 
 // ── 主组件 ─────────────────────────────────────────────────────
 export default function SettingsPage() {
-  const user    = useAuthStore(s => s.user)
-  const { ledgers } = useLedger()
+  const user           = useAuthStore(s => s.user)
+  const activeLedgerId = useLedgerStore(s => s.activeLedgerId)
+  const { ledgers }    = useLedger()
 
   const [showManager,  setShowManager]  = useState(false)
   const [showV2Import, setShowV2Import] = useState(false)
@@ -176,6 +179,14 @@ export default function SettingsPage() {
           </button>
 
         </div>
+
+        {/* V3 数据管理中心（导入 V2 正下方） */}
+        {activeLedgerId && (
+          <DataManagementCenter
+            ledgerId={activeLedgerId}
+            showToast={showSettingsToast}
+          />
+        )}
       </div>
 
       {/* ── 其他设置组（未来阶段） ── */}

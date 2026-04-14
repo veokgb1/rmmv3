@@ -20,6 +20,7 @@ import { addTransaction }      from '@/services/firebase/billService'
 import {
   analyzeReceipt,
   parseNaturalLanguageBatch,
+  type ReceiptAnalysisResult,
 }                              from '@/services/aiService'
 import { linkEvidenceToTransaction, subscribeEvidences, softUnbindByUrl } from '@/services/firebase/evidenceService'
 import { useLedgerStore }      from '@/store/ledgerStore'
@@ -135,9 +136,10 @@ interface OmniInputModalProps {
 }
 
 // ─────────────────────────────────────────────────────────────
-// OCR 状态机（拍小票 Tab，S10 不变）
+// OCR 状态机（拍小票 Tab）
+//   batch  — 多条识别结果等待用户勾选确认
 // ─────────────────────────────────────────────────────────────
-type OcrState = 'idle' | 'preview' | 'analyzing' | 'done' | 'error'
+type OcrState = 'idle' | 'preview' | 'analyzing' | 'done' | 'error' | 'batch'
 
 const ANALYZING_TEXTS = [
   '🤖 Gemini 正在解析小票的灵魂…',
@@ -728,11 +730,16 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
 // 架构：统一根容器 flex flex-col flex-1 min-h-0，各状态内部弹性滚动
 // ─────────────────────────────────────────────────────────────
 interface OcrPanelProps {
-  onFillForm: (amount: number, category: SystemCategory, date: string, notes: string) => void
-  showToast?: (msg: string, type?: 'success' | 'warning' | 'error') => void
+  /** 单条识别结果时直接填写表单 */
+  onFillForm:     (amount: number, category: SystemCategory, date: string, notes: string) => void
+  /** 用于批量入账的当前账套 ID */
+  activeLedgerId: string
+  showToast?:     (msg: string, type?: 'success' | 'warning' | 'error') => void
 }
 
-function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
+function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
+  const currentUserId = useAuthStore(s => s.user?.uid ?? '')
+
   const [ocrState,     setOcrState]     = useState<OcrState>('idle')
   const [previewUrl,   setPreviewUrl]   = useState<string | null>(null)
   const [base64Data,   setBase64Data]   = useState('')
@@ -740,6 +747,11 @@ function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
   const [ocrError,     setOcrError]     = useState('')
   const [analyzingIdx, setAnalyzingIdx] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // ── 批量确认态专属状态 ──────────────────────────────────────
+  const [ocrBatch,      setOcrBatch]      = useState<ReceiptAnalysisResult[]>([])
+  const [selectedIdxs,  setSelectedIdxs]  = useState<Set<number>>(new Set())
+  const [isBatchSaving, setIsBatchSaving] = useState(false)
 
   useEffect(() => {
     if (ocrState !== 'analyzing') return
@@ -766,10 +778,21 @@ function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
     if (!base64Data) return
     setOcrState('analyzing'); setAnalyzingIdx(0)
     try {
-      const result = await analyzeReceipt(base64Data, mimeType)
-      onFillForm(result.amount, result.category, result.date, result.notes)
-      setOcrState('done')
-      showToast?.('✨ AI 识别成功，已自动填写表单！', 'success')
+      const results = await analyzeReceipt(base64Data, mimeType)
+
+      if (results.length === 1) {
+        // ── 单条：直接填入手写表单（原有行为不变）──────────
+        const r = results[0]
+        onFillForm(r.amount, r.category, r.date, r.notes)
+        setOcrState('done')
+        showToast?.('✨ AI 识别成功，已自动填写表单！', 'success')
+      } else {
+        // ── 多条：进入批量确认视图 ──────────────────────────
+        setOcrBatch(results)
+        setSelectedIdxs(new Set(results.map((_, i) => i)))   // 默认全选
+        setOcrState('batch')
+        showToast?.(`📋 识别到 ${results.length} 条记录，请勾选确认`, 'success')
+      }
     } catch (err) {
       setOcrError(err instanceof Error ? err.message : '识别失败')
       setOcrState('error')
@@ -777,8 +800,71 @@ function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
     }
   }
 
+  // ── 批量勾选切换 ────────────────────────────────────────────
+  function toggleItem(i: number) {
+    setSelectedIdxs(prev => {
+      const next = new Set(prev)
+      next.has(i) ? next.delete(i) : next.add(i)
+      return next
+    })
+  }
+  function toggleSelectAll() {
+    setSelectedIdxs(prev =>
+      prev.size === ocrBatch.length
+        ? new Set()
+        : new Set(ocrBatch.map((_, i) => i))
+    )
+  }
+
+  // ── 批量入账（writeBatch 写 Firestore）─────────────────────
+  async function handleBatchOcrSave() {
+    const toSave = ocrBatch.filter((_, i) => selectedIdxs.has(i))
+    if (toSave.length === 0) { showToast?.('请至少勾选一条记录', 'warning'); return }
+    setIsBatchSaving(true)
+    try {
+      const batch  = writeBatch(db)
+      const txCol  = collection(db, 'transactions')
+      const now    = serverTimestamp() as unknown as number
+      for (const item of toSave) {
+        const newRef = doc(txCol)
+        batch.set(newRef, {
+          ledgerId:         activeLedgerId,
+          userId:           currentUserId,
+          date:             item.date,
+          amount:           -Math.abs(item.amount),
+          category:         item.category,
+          description:      item.notes || item.category,
+          remark:           '',
+          source:           'manual',
+          sourceType:       'manual',
+          status:           'cleared',
+          tags:             [],
+          accountId:        'acc-manual',
+          rawData:          {},
+          isManuallyEdited: false,
+          createdAt:        now,
+          updatedAt:        now,
+        })
+      }
+      await batch.commit()
+      showToast?.(`✅ 已批量入账 ${toSave.length} 条记录`, 'success')
+      setOcrState('done')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '写入失败'
+      setOcrError(msg)
+      showToast?.('批量入账失败，请重试', 'error')
+    } finally {
+      setIsBatchSaving(false)
+    }
+  }
+
   function handleReset() {
-    setOcrState('idle'); setPreviewUrl(null); setBase64Data(''); setOcrError('')
+    setOcrState('idle')
+    setPreviewUrl(null)
+    setBase64Data('')
+    setOcrError('')
+    setOcrBatch([])
+    setSelectedIdxs(new Set())
   }
 
   return (
@@ -890,6 +976,133 @@ function OcrPanel({ onFillForm, showToast }: OcrPanelProps) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* ── Batch 态：多条识别结果，复选框确认 ──────────────
+            ① 标题栏  flex-shrink-0  固定
+            ② 列表    flex-1 scroll  弹性滚动
+            ③ 双按钮  flex-shrink-0  固定悬浮
+      ────────────────────────────────────────────────────── */}
+      {ocrState === 'batch' && (
+        <>
+          {/* ① 标题栏 */}
+          <div className="flex-shrink-0 px-5 py-3 bg-emerald-50 border-b border-emerald-100
+                          flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-emerald-800">
+                📋 识别到 {ocrBatch.length} 条记录
+              </p>
+              <p className="text-[11px] text-emerald-600 mt-0.5">勾选要入账的条目，可取消不需要的行</p>
+            </div>
+            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100
+                             px-2.5 py-1 rounded-full tabular-nums">
+              已选 {selectedIdxs.size} / {ocrBatch.length}
+            </span>
+          </div>
+
+          {/* ② 可滚动列表 */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-32 space-y-2">
+
+            {/* 全选 / 取消全选 */}
+            <button
+              onClick={toggleSelectAll}
+              className="text-xs font-semibold text-primary-600 hover:text-primary-800 mb-1"
+            >
+              {selectedIdxs.size === ocrBatch.length ? '⬜ 取消全选' : '✅ 全选'}
+            </button>
+
+            {ocrBatch.map((item, i) => {
+              const selected = selectedIdxs.has(i)
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => toggleItem(i)}
+                  className="w-full text-left flex items-start gap-3 p-3 rounded-2xl border-2
+                             transition-colors active:scale-[0.98]"
+                  style={selected
+                    ? { borderColor: '#6ee7b7', background: '#f0fdf4' }
+                    : { borderColor: '#e2e8f0', background: '#fff', opacity: 0.55 }
+                  }
+                >
+                  {/* 自定义复选框 */}
+                  <div
+                    className="w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 mt-0.5"
+                    style={selected
+                      ? { borderColor: '#059669', background: '#059669' }
+                      : { borderColor: '#cbd5e1', background: '#fff' }
+                    }
+                  >
+                    {selected && (
+                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2"
+                              strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
+                  </div>
+
+                  {/* 内容 */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <span className="text-base font-bold text-slate-900 tabular-nums">
+                        ¥{item.amount.toFixed(2)}
+                      </span>
+                      <span className="text-[11px] text-slate-500">{item.date}</span>
+                    </div>
+                    <p className="text-xs text-slate-600 mt-0.5 truncate">
+                      {CATEGORY_ICON[item.category]} {item.category}
+                      {item.notes ? ` · ${item.notes}` : ''}
+                    </p>
+                  </div>
+
+                  {/* 序号徽章 */}
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100
+                                   text-[10px] font-bold text-slate-500
+                                   flex items-center justify-center">
+                    {i + 1}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* ③ 底部双按钮 */}
+          <div className="flex-shrink-0 px-5 pt-3 pb-6 bg-white border-t border-gray-100
+                          shadow-[0_-4px_16px_rgba(0,0,0,0.06)] flex gap-3">
+            <button
+              onClick={handleReset}
+              disabled={isBatchSaving}
+              className="flex-1 py-3 rounded-xl border-2 border-gray-200 text-sm font-semibold
+                         text-content-secondary hover:bg-gray-50 transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              🔄 重拍
+            </button>
+            <button
+              onClick={() => void handleBatchOcrSave()}
+              disabled={isBatchSaving || selectedIdxs.size === 0}
+              className="flex-[2] py-3 rounded-xl text-sm font-bold text-white
+                         bg-primary-600 hover:bg-primary-700 shadow-fab
+                         active:scale-[0.98] transition-all
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         flex items-center justify-center gap-2"
+            >
+              {isBatchSaving ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10"
+                      stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  <span>写入中…</span>
+                </>
+              ) : (
+                <span>💾 确认入账（{selectedIdxs.size} 条）</span>
+              )}
+            </button>
+          </div>
+        </>
       )}
 
       {/* done 态：父组件已切回手写 Tab，此处无需渲染 */}
@@ -1651,6 +1864,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
           {activeTab === 'ocr' && (
             <OcrPanel
               onFillForm={handleOcrFill}
+              activeLedgerId={activeLedgerId}
               showToast={showToast}
             />
           )}
