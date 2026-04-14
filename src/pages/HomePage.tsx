@@ -451,10 +451,12 @@ function HomePage() {
     setOmniOpen(true)
   }
 
-  // ── OmniInputModal 关闭（同时清空 editTx）────────────────
+  // ── OmniInputModal 关闭（同时清空 editTx + detailTx，斩断循环路径）──
+  // 保证：Detail → Edit → Save/Cancel 后直接落地 HomePage，不回弹 DetailModal
   function handleOmniClose() {
     setOmniOpen(false)
     setEditTx(null)
+    setDetailTx(null)   // 防御性清空：即使已是 null，无副作用
   }
 
   // ── 编辑模式保存：严格三层物理隔离 ─────────────────────────

@@ -15,7 +15,7 @@ import {
 import {
   collection, addDoc, deleteDoc, doc,
   query, where, onSnapshot, getDoc, getDocs,
-  updateDoc, arrayRemove,
+  updateDoc, arrayRemove, arrayUnion,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db, storage }   from '@/config/firebase'
@@ -217,50 +217,62 @@ export function subscribeEvidences(
 // § 6  软解绑凭证（保留至凭证池，不物理删除）
 // ════════════════════════════════════════════════════════════════
 
+/** softUnbindEvidence 可携带的来源溯源元数据 */
+export interface SoftUnbindMeta {
+  orphanReason?:      'manual' | 'replaced'
+  orphanFromDate?:     string
+  orphanFromCategory?: string
+  orphanFromAmount?:   number
+}
+
 /**
  * softUnbindEvidence — 将凭证从账单解绑并移入凭证池（软操作）
  *
  * 状态机：ok → orphan
  *
- * 执行步骤：
- *   1. 读取凭证文档（获取 storageUrl 用于从 receiptUrls 移除）
- *   2. 将凭证状态置为 orphan，清空 transactionId，记录解绑时间与原始账单 ID
- *   3. 从 Transaction.receiptUrls 移除该 URL（arrayRemove，原子操作）
- *   4. 查询该账单剩余 ok 状态凭证数量
- *      若为 0：将 Transaction.isVerified 回退为 false（历史回改规则）
- *
- * ⚠️  本函数不写版本记录，版本审计由 governanceService.unbindEvidence 负责
- *
  * @param evidenceId  Firestore evidences 文档 ID
  * @param txId        关联账单 Firestore 文档 ID
+ * @param meta        可选的来源溯源元数据（日期/分类/金额/原因）
  */
 export async function softUnbindEvidence(
   evidenceId: string,
   txId:       string,
+  meta?:      SoftUnbindMeta,
 ): Promise<void> {
   // 步骤 1：读取凭证文档
   const evRef  = doc(db, 'evidences', evidenceId)
   const evSnap = await getDoc(evRef)
   if (!evSnap.exists()) throw new Error(`凭证 ${evidenceId} 不存在或已被删除`)
-  const evData     = evSnap.data() as { storageUrl: string }
-  const storageUrl = String(evData.storageUrl ?? '')
 
-  const now = Date.now()
+  const evData     = evSnap.data() as Record<string, unknown>
+  const storageUrl = typeof evData['storageUrl'] === 'string' ? evData['storageUrl'] : ''
+  const now        = Date.now()
 
-  // 步骤 2：软更新凭证文档 → orphan 状态
+  // 步骤 2：软更新凭证文档 → orphan 状态（带来源溯源快照）
   await updateDoc(evRef, {
-    status:       'orphan',
-    transactionId: '',       // 解除账单关联
-    orphanedAt:   now,
-    originalTxId: txId,      // 保留来源账单 ID，供凭证池追踪
+    status:             'orphan',
+    transactionId:      '',
+    orphanedAt:         now,
+    originalTxId:       txId,
+    orphanReason:       meta?.orphanReason      ?? 'manual',
+    orphanFromDate:     meta?.orphanFromDate     ?? '',
+    orphanFromCategory: meta?.orphanFromCategory ?? '',
+    orphanFromAmount:   meta?.orphanFromAmount   ?? 0,
   })
 
   // 步骤 3：从 Transaction.receiptUrls 移除该 URL
+  // 若 storageUrl 为空（V2 边缘情况），跳过 arrayRemove，避免写入脏数据
   const txRef = doc(db, 'transactions', txId)
-  await updateDoc(txRef, {
-    receiptUrls: arrayRemove(storageUrl),
-    updatedAt:   now,
-  })
+  if (storageUrl) {
+    await updateDoc(txRef, {
+      receiptUrls: arrayRemove(storageUrl),
+      updatedAt:   now,
+    })
+  } else {
+    // storageUrl 为空时只更新时间戳
+    await updateDoc(txRef, { updatedAt: now })
+    console.warn(`[evidenceService] softUnbindEvidence: storageUrl 为空，跳过 arrayRemove evId=${evidenceId}`)
+  }
 
   // 步骤 4：检查剩余 ok 状态凭证，触发历史回改规则
   const remainingSnap = await getDocs(
@@ -276,6 +288,191 @@ export async function softUnbindEvidence(
   }
 
   console.debug(`[evidenceService] 软解绑完成 evId=${evidenceId} → orphan 凭证池`)
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 6b  V2 历史数据软解绑（URL-only，无 evidenceId）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * softUnbindByUrl — 通过 storageUrl 解绑凭证，兼容 V2 迁移数据
+ *
+ * 问题背景：
+ *   V2 迁移账单的 receiptUrls 有 URL，但 Firestore evidences 集合无对应文档。
+ *   subscribeEvidences 返回空 → urlToEvId[url] = undefined → 💔 按钮不显示。
+ *
+ * 处理逻辑：
+ *   1. 先查询 evidences 中是否已有对应文档（transactionId + storageUrl 联合查）
+ *   2. 有 → 调用 softUnbindEvidence
+ *   3. 无（V2 case）→ 直接创建 orphan 文档 + 移除 URL + 历史回改
+ *
+ * @param txId       关联账单 Firestore 文档 ID
+ * @param storageUrl 要解绑的凭证 URL
+ * @param txMeta     账单元数据快照（用于 Pool B 来源溯源展示）
+ */
+export async function softUnbindByUrl(
+  txId:       string,
+  storageUrl: string,
+  txMeta?:    { date?: string; category?: string; amount?: number; ledgerId?: string },
+): Promise<void> {
+  const now = Date.now()
+
+  // 步骤 1：查询是否已有 evidences 文档
+  const existingSnap = await getDocs(
+    query(
+      collection(db, 'evidences'),
+      where('transactionId', '==', txId),
+      where('storageUrl',    '==', storageUrl),
+    ),
+  )
+
+  if (!existingSnap.empty) {
+    // 找到了现有文档 → 走标准软解绑流程
+    const evId = existingSnap.docs[0].id
+    await softUnbindEvidence(evId, txId, {
+      orphanReason:       'manual',
+      orphanFromDate:     txMeta?.date     ?? '',
+      orphanFromCategory: txMeta?.category ?? '',
+      orphanFromAmount:   txMeta?.amount   ?? 0,
+    })
+    return
+  }
+
+  // V2 fallback：无 evidences 文档，手动创建 orphan 记录
+  // 从 URL 推断 storagePath（格式：.../o/ENCODED_PATH?alt=media...）
+  // 支持 Firebase Storage URL 两种格式：
+  //   格式 A: https://firebasestorage.googleapis.com/.../o/ENCODED?alt=media
+  //   格式 B: https://storage.googleapis.com/BUCKET/PATH（无编码）
+  let storagePath: string
+  const firebaseMatch = storageUrl.match(/\/o\/([^?#]+)/)
+  if (firebaseMatch?.[1]) {
+    try {
+      storagePath = decodeURIComponent(firebaseMatch[1])
+    } catch {
+      storagePath = firebaseMatch[1]  // 解码失败时保留原始字符串
+    }
+  } else {
+    // 格式 B 或无法解析：取 URL pathname 最后一段作为路径标识
+    storagePath = new URL(storageUrl).pathname.replace(/^\/[^/]+\//, '') || storageUrl
+  }
+  const fileName = storagePath.split('/').pop()?.replace(/^\d+_/, '') || 'v2-receipt'
+
+  // 获取 ledgerId（优先从参数，否则从账单文档读取）
+  let ledgerId = txMeta?.ledgerId ?? ''
+  if (!ledgerId) {
+    const txSnap = await getDoc(doc(db, 'transactions', txId))
+    ledgerId = String(txSnap.data()?.['ledgerId'] ?? '')
+  }
+
+  // 创建 orphan 凭证文档（代表这张 V2 图片的历史记录）
+  await addDoc(collection(db, 'evidences'), {
+    transactionId:      '',
+    ledgerId,
+    uploadedBy:         'v2-migration',
+    fileName,
+    storageUrl,
+    storagePath,
+    fileType:           'image/jpeg',   // V2 图片默认 JPEG
+    fileSizeBytes:      0,              // V2 无法知道原始大小
+    uploadedAt:         now,
+    status:             'orphan',
+    orphanedAt:         now,
+    originalTxId:       txId,
+    orphanReason:       'manual',
+    orphanFromDate:     txMeta?.date     ?? '',
+    orphanFromCategory: txMeta?.category ?? '',
+    orphanFromAmount:   txMeta?.amount   ?? 0,
+  })
+
+  // 步骤 3：从 Transaction.receiptUrls 移除 URL
+  const txRef = doc(db, 'transactions', txId)
+  await updateDoc(txRef, {
+    receiptUrls: arrayRemove(storageUrl),
+    updatedAt:   now,
+  })
+
+  // 步骤 4：若 receiptUrls 已清空，触发历史回改（isVerified = false）
+  const txAfterSnap  = await getDoc(txRef)
+  const remaining    = (txAfterSnap.data()?.['receiptUrls'] ?? []) as string[]
+  if (remaining.length === 0) {
+    await updateDoc(txRef, { isVerified: false })
+    console.debug(`[evidenceService] V2 解绑后 receiptUrls 为空，回退 isVerified=false txId=${txId}`)
+  }
+
+  console.debug(`[evidenceService] V2 软解绑完成 url=${storageUrl.slice(0, 60)} → orphan 凭证池`)
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 6c  Pool A 直传（上传新凭证到待处理池，不关联任何账单）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * uploadToPool — 将文件直接上传到 Pool A（unprocessed 状态）
+ *
+ * 与 uploadEvidence 的区别：
+ *   · transactionId = ''（不关联账单）
+ *   · status = 'unprocessed'（待处理收件箱）
+ *   · Storage 路径：receipts/{ledgerId}/pool/{timestamp}_{fileName}
+ *
+ * @param file        待上传文件
+ * @param ledgerId    所属账套 ID
+ * @param uploadedBy  上传者 UID
+ * @param onProgress  可选进度回调（0-100）
+ */
+export async function uploadToPool(
+  file:        File,
+  ledgerId:    string,
+  uploadedBy:  string,
+  onProgress?: (percent: number) => void,
+): Promise<Evidence> {
+  const sanitized   = file.name.replace(/[#[\]*?]/g, '_')
+  const storagePath = `receipts/${ledgerId}/pool/${Date.now()}_${sanitized}`
+  const sRef        = ref(storage, storagePath)
+
+  await new Promise<void>((resolve, reject) => {
+    const task = uploadBytesResumable(sRef, file, { contentType: file.type })
+    task.on(
+      'state_changed',
+      (snap) => onProgress?.(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+      reject,
+      resolve,
+    )
+  })
+
+  const storageUrl = await getDownloadURL(sRef)
+  const now        = Date.now()
+
+  const payload = {
+    transactionId: '',        // 未关联账单
+    ledgerId,
+    uploadedBy,
+    fileName:      file.name,
+    storageUrl,
+    storagePath,
+    fileType:      file.type,
+    fileSizeBytes: file.size,
+    uploadedAt:    now,
+    status:        'unprocessed' as const,
+  }
+
+  const docRef = await addDoc(collection(db, 'evidences'), payload)
+  console.debug(`[evidenceService] 凭证已上传至 Pool A ledger=${ledgerId} docId=${docRef.id}`)
+  return { id: docRef.id, ...payload }
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 6d  更新凭证池备注
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * updateEvidencePoolNote — 在凭证池中为某张凭证写备注
+ * 调用方：Pool A / Pool B 卡片内联编辑
+ */
+export async function updateEvidencePoolNote(
+  evidenceId: string,
+  poolNote:   string,
+): Promise<void> {
+  await updateDoc(doc(db, 'evidences', evidenceId), { poolNote })
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -340,3 +537,53 @@ export function subscribePoolEvidences(
  * @param storagePath Firebase Storage 存储路径
  */
 export const hardDeleteEvidence = deleteEvidence
+
+// ════════════════════════════════════════════════════════════════
+// § 9  从凭证池重新关联到账单（Pool → ok）
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * linkEvidenceToTransaction — 将池中凭证挂载到目标账单
+ *
+ * 状态机：unprocessed / orphan / replaced → ok
+ *
+ * 执行步骤：
+ *   1. 读取凭证文档（获取 storageUrl 和当前状态）
+ *   2. 将凭证状态置为 ok，绑定新 transactionId，清空孤儿标记
+ *   3. 将 storageUrl 追加到 Transaction.receiptUrls（arrayUnion，幂等）
+ *
+ * @param evidenceId  Firestore evidences 文档 ID
+ * @param txId        目标账单 Firestore 文档 ID
+ * @returns           { storageUrl } 用于 AppendAmountModal 的图片预览
+ */
+export async function linkEvidenceToTransaction(
+  evidenceId: string,
+  txId:       string,
+): Promise<{ storageUrl: string }> {
+  // 步骤 1：读取凭证文档
+  const evRef  = doc(db, 'evidences', evidenceId)
+  const evSnap = await getDoc(evRef)
+  if (!evSnap.exists()) throw new Error(`凭证 ${evidenceId} 不存在`)
+  const evData     = evSnap.data() as { storageUrl: string }
+  const storageUrl = String(evData.storageUrl ?? '')
+
+  const now = Date.now()
+
+  // 步骤 2：凭证文档恢复为 ok 状态
+  await updateDoc(evRef, {
+    status:        'ok',
+    transactionId: txId,
+    linkedAt:      now,    // 记录挂载时间（可选，用于审计）
+    // 以下字段保留为历史，不清除（可供审计追溯来源）
+  })
+
+  // 步骤 3：追加 URL 到 Transaction.receiptUrls（幂等）
+  const txRef = doc(db, 'transactions', txId)
+  await updateDoc(txRef, {
+    receiptUrls: arrayUnion(storageUrl),
+    updatedAt:   now,
+  })
+
+  console.debug(`[evidenceService] 凭证挂载完成 evId=${evidenceId} → txId=${txId}`)
+  return { storageUrl }
+}

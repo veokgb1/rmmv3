@@ -1,32 +1,54 @@
-// ImageGalleryModal — 账单凭证图集浏览弹窗 (S21)
+// ImageGalleryModal — 账单凭证图集浏览弹窗 (S21 增强版)
 //
 // 触发时机：点击 BillItem / ConflictCard 上的 ThumbnailImage 缩略图
 // 功能：
 //   · 全屏轮播查看账单绑定的所有凭证（支持左右切换）
-//   · 每张图片底部提供「💔 解绑此凭证」按钮（触发 UnbindingModal）
+//   · 每张图片底部提供「🔗 解绑此凭证」药丸标签（触发 UnbindingModal）
+//   · V2 数据（无 evidenceId）显示为加载中占位，不崩溃
 //   · 关闭：点击遮罩 / 右上角 ✕
 //
-// Props 设计：接收 receiptUrls 数组 + evidenceId 查询函数
-// evidenceIds 通过订阅 subscribeEvidences 获取，调用方应传入 txId 供查询
+// 药丸标签颜色通过 inline style 保障（绕过 PurgeCSS）
+// onSuccess 回调由调用方传入，用于在外层触发 Toast
 
-import { useState, useEffect }           from 'react'
-import { StorageImage }                  from '@/components/ui/StorageImage'
-import { subscribeEvidences }            from '@/services/firebase/evidenceService'
-import { useGovernanceStore }            from '@/store/governanceStore'
+import { useState, useEffect }  from 'react'
+import { StorageImage }         from '@/components/ui/StorageImage'
+import { subscribeEvidences }   from '@/services/firebase/evidenceService'
+import { useGovernanceStore }   from '@/store/governanceStore'
 
 // ════════════════════════════════════════════════════════════════
 // Props
 // ════════════════════════════════════════════════════════════════
 
 interface ImageGalleryModalProps {
-  /** 账单 Firestore 文档 ID（用于查询 evidences 获取 evidenceId）*/
-  txId:          string
-  /** Transaction.receiptUrls 数组（URL 顺序决定轮播顺序）*/
-  receiptUrls:   string[]
+  /** 账单 Firestore 文档 ID */
+  txId:           string
+  /** Transaction.receiptUrls 数组 */
+  receiptUrls:    string[]
   /** 初始显示的图片下标（默认 0）*/
-  initialIndex?: number
+  initialIndex?:  number
   /** 关闭回调 */
-  onClose:       () => void
+  onClose:        () => void
+  /**
+   * onUnbindSuccess — 解绑/硬删成功后的外部回调（可选）
+   * 调用方可在此触发 Toast
+   */
+  onUnbindSuccess?: (action: 'unbound' | 'deleted') => void
+}
+
+// ════════════════════════════════════════════════════════════════
+// Unlink SVG icon（内联，无需 icon 库）
+// ════════════════════════════════════════════════════════════════
+
+function UnlinkIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" strokeWidth="2.5"
+         strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      <line x1="5" y1="5" x2="19" y2="19"/>
+    </svg>
+  )
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -38,9 +60,9 @@ export default function ImageGalleryModal({
   receiptUrls,
   initialIndex = 0,
   onClose,
+  onUnbindSuccess,
 }: ImageGalleryModalProps) {
-  const [idx, setIdx]   = useState(initialIndex)
-  // evidenceId 映射：storageUrl → evidenceId
+  const [idx,       setIdx]       = useState(initialIndex)
   const [urlToEvId, setUrlToEvId] = useState<Record<string, string>>({})
 
   const openUnbindModal = useGovernanceStore(s => s.openUnbindModal)
@@ -50,7 +72,7 @@ export default function ImageGalleryModal({
     if (!txId) return
     const unsub = subscribeEvidences(txId, (evs) => {
       const map: Record<string, string> = {}
-      evs.forEach(ev => { map[ev.storageUrl] = ev.id })
+      evs.forEach(ev => { if (ev.status === 'ok') map[ev.storageUrl] = ev.id })
       setUrlToEvId(map)
     })
     return unsub
@@ -78,6 +100,9 @@ export default function ImageGalleryModal({
       evidenceId:    evId,
       transactionId: txId,
       evidenceUrl:   currentUrl,
+      onSuccess: (action) => {
+        onUnbindSuccess?.(action)
+      },
     })
     onClose()
   }
@@ -90,7 +115,7 @@ export default function ImageGalleryModal({
     >
       {/* ── 右上角关闭按钮 ── */}
       <button
-        onClick={(e) => { e.stopPropagation(); onClose() }}
+        onClick={e => { e.stopPropagation(); onClose() }}
         className="absolute top-4 right-4 z-10 w-9 h-9 flex items-center justify-center
                    rounded-full bg-white/15 text-white text-xl
                    hover:bg-white/30 transition-colors"
@@ -126,7 +151,6 @@ export default function ImageGalleryModal({
           </button>
         )}
 
-        {/* 主图 */}
         <StorageImage
           path={currentUrl}
           alt={`凭证 ${idx + 1}`}
@@ -153,18 +177,16 @@ export default function ImageGalleryModal({
         className="mt-5 flex items-center gap-3"
         onClick={e => e.stopPropagation()}
       >
-        {/* 缩略图指示点（多图导航）*/}
+        {/* 导航点 */}
         {total > 1 && (
           <div className="flex items-center gap-1.5">
             {receiptUrls.map((_, i) => (
               <button
                 key={i}
-                onClick={(e) => { e.stopPropagation(); setIdx(i) }}
+                onClick={e => { e.stopPropagation(); setIdx(i) }}
                 className={[
                   'rounded-full transition-all duration-150',
-                  i === idx
-                    ? 'w-4 h-2 bg-white'
-                    : 'w-2 h-2 bg-white/40 hover:bg-white/70',
+                  i === idx ? 'w-4 h-2 bg-white' : 'w-2 h-2 bg-white/40 hover:bg-white/70',
                 ].join(' ')}
                 aria-label={`跳转到第 ${i + 1} 张`}
               />
@@ -172,20 +194,27 @@ export default function ImageGalleryModal({
           </div>
         )}
 
-        {/* 解绑按钮 */}
+        {/* ── 解绑药丸标签 ──
+            · inline style 保证颜色渲染（绕过 PurgeCSS）
+            · hover:scale-105 提升可点击感知
+            · evId 无时（V2 数据/加载中）禁用并显示提示        */}
         {evId ? (
           <button
             onClick={handleUnbind}
             className="flex items-center gap-1.5 px-4 py-2 rounded-full
-                       bg-amber-500/90 hover:bg-amber-500 text-white
-                       text-xs font-semibold transition-colors shadow-lg"
+                       text-white text-xs font-semibold
+                       transition-transform hover:scale-105 active:scale-95 shadow-lg"
+            style={{ background: 'rgba(245,158,11,0.92)' }}
           >
-            <span>💔</span>
+            <UnlinkIcon size={12} />
             <span>解绑此凭证</span>
           </button>
         ) : (
-          // evidenceId 尚未加载（onSnapshot 还未返回）
-          <div className="px-4 py-2 rounded-full bg-white/10 text-white/40 text-xs">
+          // evidenceId 尚未加载 or V2 无文档（仅显示，不可交互）
+          <div
+            className="px-4 py-2 rounded-full text-xs"
+            style={{ background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.4)' }}
+          >
             加载中…
           </div>
         )}

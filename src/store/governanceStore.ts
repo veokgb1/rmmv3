@@ -16,6 +16,12 @@ export interface UnbindTarget {
   evidenceId:    string
   /** 可选：凭证预览 URL（供确认弹窗展示缩略图）*/
   evidenceUrl?:  string
+  /**
+   * onSuccess — 解绑/硬删成功后的回调
+   * 调用方可以在此 push Toast 或触发本地状态刷新
+   * 不传则静默关闭
+   */
+  onSuccess?: (action: 'unbound' | 'deleted') => void
 }
 
 // ── Store 状态接口 ─────────────────────────────────────────────

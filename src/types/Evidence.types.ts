@@ -89,6 +89,38 @@ export interface Evidence {
    */
   originalTxId?: string
 
+  /**
+   * 解绑原因
+   * manual   : 用户手动点击解绑（💔 按钮）
+   * replaced : 账单合并时被替换下来的凭证
+   */
+  orphanReason?: 'manual' | 'replaced'
+
+  /** 原始账单日期（解绑时快照，用于 Pool B 来源溯源展示）*/
+  orphanFromDate?: string
+
+  /** 原始账单分类（解绑时快照）*/
+  orphanFromCategory?: string
+
+  /** 原始账单金额（解绑时快照，含正负符号）*/
+  orphanFromAmount?: number
+
+  /**
+   * 凭证池专用备注（用户在池中手动填写，独立于 note 字段）
+   * 在凭证挂载到账单后依然保留，供审计参考
+   */
+  poolNote?: string
+
+  /**
+   * AI 预处理识别结果（上传到 Pool A 时由 OCR 填写，可选）
+   * 展示在 Pool A 卡片上，辅助用户判断是否挂载到账单
+   */
+  aiHints?: {
+    merchant?: string   // 商家名称
+    amount?:   number   // 识别金额
+    date?:     string   // 识别日期
+  }
+
   /** 可选备注（如：原始单据编号、备注说明）*/
   note?: string
 }

@@ -1,140 +1,176 @@
-// UnbindingModal — 凭证解绑确认弹窗 (S21)
+// UnbindingModal — 凭证解绑确认弹窗 (S21 增强版)
 //
-// 挂载位置：App.tsx > MainApp（全局单例，与 EvidenceUploaderModal / EjectionBlocker 同级）
-// 触发方：EvidenceList / ImageGalleryModal 的"解绑"按钮
-//         → openUnbindModal() → governanceStore.unbindTarget 非 null
+// 挂载位置：App.tsx > MainApp（全局单例）
+// 触发方：EvidenceList / ImageGalleryModal / OmniInputModal 的"解绑"按钮
+//         → openUnbindModal(target) → governanceStore.unbindTarget 非 null
 //
-// 防呆设计：
-//   · 2 秒强制倒计时，期间确认按钮显示锁定态，无法点击
-//   · 打开时立即查询该账单剩余凭证数，若为最后一张则显示额外警告
-//   · 解绑过程中禁用所有交互，防止重复点击
-//   · 背景蒙层 / 关闭按钮：处理中时均不响应
+// 功能：
+//   · 软解绑（默认）：凭证移入凭证池（orphan），保留文件，可找回
+//   · 硬删除（可选）：点击红色【🗑️ 彻底删除】→ 二次警告 → 物理销毁
 //
-// ⚠️  行为说明（Soft Unbind）：
-//   本弹窗执行【软解绑】，凭证不会被物理删除。
-//   解绑后凭证进入【凭证池】（orphan 状态），可在治理中心 → 凭证管理 中查看。
-//   永久物理删除只能通过凭证池 UI 执行。
+// 反馈：
+//   · 成功后内部显示绿色/红色结果条 800ms，然后关闭
+//   · 若调用方传入 target.onSuccess 回调，成功后同步触发（用于外部 Toast）
 //
-// 业务逻辑委托 governanceService.unbindEvidence：
-//   1. 凭证状态 ok → orphan（保留 Storage 文件和 Firestore 文档）
-//   2. 从 Transaction.receiptUrls 移除该 URL
-//   3. 若剩余凭证为 0 → isVerified 回退为 false（历史回改规则）
-//   4. 写入 transactionVersions 审计记录
+// 防呆：
+//   · 2 秒强制倒计时，期间确认按钮锁定
+//   · 最后一张凭证额外警告（isVerified 回退提示）
+//   · 处理中禁用所有交互
 
-import { useState, useEffect }          from 'react'
-import { getDocs, query, collection, where } from 'firebase/firestore'
-import { db }                           from '@/config/firebase'
-import { useGovernanceStore }           from '@/store/governanceStore'
-import { useAuthStore }                 from '@/store/authStore'
-import { unbindEvidence }               from '@/services/firebase/governanceService'
+import { useState, useEffect }               from 'react'
+import { getDocs, query, collection, where, getDoc, doc } from 'firebase/firestore'
+import { db }                                from '@/config/firebase'
+import { useGovernanceStore }                from '@/store/governanceStore'
+import { useAuthStore }                      from '@/store/authStore'
+import { unbindEvidence }                    from '@/services/firebase/governanceService'
+import { hardDeleteEvidence }                from '@/services/firebase/evidenceService'
 
 // ── 防呆倒计时时长（秒）────────────────────────────────────────
 const COUNTDOWN_SEC = 2
 
 // ════════════════════════════════════════════════════════════════
-// § 1  倒计时进度环（纯 SVG，无第三方库）
+// § 1  倒计时进度环
 // ════════════════════════════════════════════════════════════════
 
 interface CountdownRingProps {
-  current: number   // 剩余秒数（0 = 完成）
-  total:   number   // 总秒数
-  size?:   number   // SVG 尺寸 px（默认 36）
+  current: number
+  total:   number
+  size?:   number
 }
 
 function CountdownRing({ current, total, size = 36 }: CountdownRingProps) {
-  const radius      = (size - 4) / 2          // 留 2px stroke 外边距
+  const radius       = (size - 4) / 2
   const circumference = 2 * Math.PI * radius
-  // 进度：0 秒剩余时 strokeDashoffset = 0（满圈），total 秒时 = circumference（空圈）
-  const progress    = current / total
-  const dashOffset  = circumference * progress
+  const dashOffset   = circumference * (current / total)
 
   return (
     <svg width={size} height={size} className="transform -rotate-90 flex-shrink-0">
-      {/* 底圈（轨道）*/}
-      <circle
-        cx={size / 2} cy={size / 2} r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={3}
-        className="text-amber-200"
-      />
-      {/* 进度圈 */}
-      <circle
-        cx={size / 2} cy={size / 2} r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={3}
+      <circle cx={size / 2} cy={size / 2} r={radius}
+        fill="none" stroke="#fde68a" strokeWidth={3} />
+      <circle cx={size / 2} cy={size / 2} r={radius}
+        fill="none" stroke="#f59e0b" strokeWidth={3}
         strokeLinecap="round"
         strokeDasharray={circumference}
         strokeDashoffset={dashOffset}
-        className="text-amber-500 transition-[stroke-dashoffset] duration-1000 ease-linear"
+        style={{ transition: 'stroke-dashoffset 1s linear' }}
       />
     </svg>
   )
 }
 
 // ════════════════════════════════════════════════════════════════
-// § 2  主组件
+// § 2  二次确认弹层（彻底删除专用）
 // ════════════════════════════════════════════════════════════════
 
+interface HardDeleteConfirmProps {
+  onConfirm: () => void
+  onCancel:  () => void
+  isDeleting: boolean
+}
+
+function HardDeleteConfirmLayer({ onConfirm, onCancel, isDeleting }: HardDeleteConfirmProps) {
+  return (
+    <div
+      className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-2xl
+                 backdrop-blur-sm"
+      style={{ background: 'rgba(0,0,0,0.65)' }}
+    >
+      <div className="mx-4 w-full max-w-[280px] rounded-2xl overflow-hidden shadow-2xl"
+           style={{ background: '#fff' }}>
+        {/* 顶部红色色带 */}
+        <div style={{ height: 4, background: 'linear-gradient(90deg,#ef4444,#dc2626)' }} />
+        <div className="px-5 pt-4 pb-2 text-center">
+          <div className="text-3xl mb-2">🗑️</div>
+          <p className="text-sm font-bold" style={{ color: '#dc2626' }}>
+            确认彻底删除？
+          </p>
+          <p className="text-xs mt-1.5 leading-relaxed" style={{ color: '#6b7280' }}>
+            此操作将从云端<strong>永久抹除</strong>文件，<br />
+            <strong style={{ color: '#dc2626' }}>不可撤销，无法找回！</strong>
+          </p>
+        </div>
+        <div className="flex gap-2 px-4 pb-4">
+          <button
+            onClick={onCancel}
+            disabled={isDeleting}
+            className="flex-1 py-2 rounded-xl text-sm font-medium transition-colors"
+            style={{ background: '#f1f5f9', color: '#475569' }}
+          >
+            取消
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isDeleting}
+            className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors
+                       flex items-center justify-center gap-1.5"
+            style={{ background: '#dc2626', color: '#fff', opacity: isDeleting ? 0.6 : 1 }}
+          >
+            {isDeleting
+              ? <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white
+                                   rounded-full animate-spin" /><span>删除中…</span></>
+              : '永久删除'
+            }
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════
+// § 3  主组件
+// ════════════════════════════════════════════════════════════════
+
+type DoneState = 'unbound' | 'deleted' | null
+
 export default function UnbindingModal() {
-  // ── Store 读取 ────────────────────────────────────────────────
   const unbindTarget     = useGovernanceStore(s => s.unbindTarget)
   const closeUnbindModal = useGovernanceStore(s => s.closeUnbindModal)
   const user             = useAuthStore(s => s.user)
 
-  // ── 本地状态 ──────────────────────────────────────────────────
-  const [countdown,      setCountdown]      = useState(COUNTDOWN_SEC)
-  const [isProcessing,   setIsProcessing]   = useState(false)
-  const [errorMsg,       setErrorMsg]       = useState<string | null>(null)
-  /**
-   * isLastEvidence：
-   *   null  = 正在查询（不显示额外警告，避免闪烁）
-   *   true  = 这是最后一张凭证（显示状态回退警告）
-   *   false = 还有其他凭证
-   */
-  const [isLastEvidence, setIsLastEvidence] = useState<boolean | null>(null)
+  const [countdown,          setCountdown]         = useState(COUNTDOWN_SEC)
+  const [isProcessing,       setIsProcessing]      = useState(false)
+  const [errorMsg,           setErrorMsg]          = useState<string | null>(null)
+  const [isLastEvidence,     setIsLastEvidence]    = useState<boolean | null>(null)
+  /** 操作完成后短暂显示结果条，然后自动关闭 */
+  const [doneState,          setDoneState]         = useState<DoneState>(null)
+  /** 控制硬删二次确认层的显隐 */
+  const [showHardConfirm,    setShowHardConfirm]   = useState(false)
+  const [isHardDeleting,     setIsHardDeleting]    = useState(false)
 
-  // ── 每次目标变更：重置状态 + 启动倒计时 + 查询凭证数 ──────────
+  // ── 每次目标变更：重置状态 + 启动倒计时 + 查凭证数 ───────────
   useEffect(() => {
     if (!unbindTarget) return
-
-    // 重置本地状态
     setCountdown(COUNTDOWN_SEC)
     setIsProcessing(false)
     setErrorMsg(null)
     setIsLastEvidence(null)
+    setDoneState(null)
+    setShowHardConfirm(false)
+    setIsHardDeleting(false)
 
-    // 启动 1 秒 interval 倒计时
     const timerId = setInterval(() => {
       setCountdown(prev => {
-        if (prev <= 1) {
-          clearInterval(timerId)
-          return 0
-        }
+        if (prev <= 1) { clearInterval(timerId); return 0 }
         return prev - 1
       })
     }, 1000)
 
-    // 异步查询当前账单共有几张凭证（判断是否为最后一张）
-    getDocs(
-      query(
-        collection(db, 'evidences'),
-        where('transactionId', '==', unbindTarget.transactionId),
-      ),
-    )
+    getDocs(query(
+      collection(db, 'evidences'),
+      where('transactionId', '==', unbindTarget.transactionId),
+    ))
       .then(snap => setIsLastEvidence(snap.size === 1))
-      .catch(() => setIsLastEvidence(null))  // 查询失败：静默，不显示警告
+      .catch(() => setIsLastEvidence(null))
 
     return () => clearInterval(timerId)
-  }, [unbindTarget?.evidenceId])  // evidenceId 变化 = 新解绑目标，触发重置
+  }, [unbindTarget?.evidenceId])
 
-  // ── Modal 不可见时不渲染 DOM（不影响已有路由/组件） ──────────
   if (!unbindTarget) return null
 
-  // ── 关闭操作（处理中时拦截，防止中途中断写入）────────────────
+  // ── 关闭（处理中时拦截）────────────────────────────────────────
   function handleClose(): void {
-    if (isProcessing) return
+    if (isProcessing || isHardDeleting) return
     closeUnbindModal()
   }
 
@@ -142,44 +178,79 @@ export default function UnbindingModal() {
     if (e.target === e.currentTarget) handleClose()
   }
 
-  // ── 确认解绑（委托 governanceService.unbindEvidence）──────────
+  // ── 软解绑确认 ─────────────────────────────────────────────────
   async function handleConfirm(): Promise<void> {
     if (!user || countdown > 0 || isProcessing) return
-
     setIsProcessing(true)
     setErrorMsg(null)
-
     try {
-      await unbindEvidence(
-        unbindTarget.evidenceId,
-        unbindTarget.transactionId,
-        user.uid,
-      )
-      // 成功：关闭弹窗（EvidenceList 的 onSnapshot 会自动刷新缩略图）
-      closeUnbindModal()
+      await unbindEvidence(unbindTarget.evidenceId, unbindTarget.transactionId, user.uid)
+      setDoneState('unbound')
+      // 成功回调（外部 Toast 等）
+      unbindTarget.onSuccess?.('unbound')
+      // 800ms 后自动关闭
+      setTimeout(() => closeUnbindModal(), 800)
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : '解绑失败，请检查网络后重试')
       setIsProcessing(false)
     }
   }
 
-  const canConfirm = countdown === 0 && !isProcessing
+  // ── 硬删除执行（二次确认后）────────────────────────────────────
+  async function handleHardDelete(): Promise<void> {
+    if (!user) return
+    setIsHardDeleting(true)
+    setErrorMsg(null)
+    try {
+      // 从 Firestore 读取 storagePath（调用方没有传入）
+      const evSnap = await getDoc(doc(db, 'evidences', unbindTarget.evidenceId))
+      if (!evSnap.exists()) throw new Error('凭证文档不存在，可能已被删除')
+      const storagePath = String(evSnap.data()?.['storagePath'] ?? '')
+      if (!storagePath) throw new Error('无法获取存储路径，请联系管理员')
+
+      await hardDeleteEvidence(unbindTarget.evidenceId, storagePath)
+      setDoneState('deleted')
+      unbindTarget.onSuccess?.('deleted')
+      setTimeout(() => closeUnbindModal(), 900)
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : '删除失败，请重试')
+      setIsHardDeleting(false)
+      setShowHardConfirm(false)
+    }
+  }
+
+  const canConfirm = countdown === 0 && !isProcessing && !doneState
 
   // ════════════════════════════════════════════════════════════════
-  // § 3  渲染
+  // § 4  渲染
   // ════════════════════════════════════════════════════════════════
 
   return (
-    // 全屏遮罩：z-[400]（最高层级，高于 EvidenceUploaderModal z-[300] 和 EjectionBlocker z-[200]）
     <div
       className="fixed inset-0 z-[400] flex items-center justify-center
                  bg-black/60 backdrop-blur-sm px-4"
       onClick={handleBackdropClick}
     >
-      <div className="w-full max-w-sm bg-surface-primary rounded-2xl shadow-2xl overflow-hidden">
+      {/* 弹窗容器 — position:relative 供二次确认层绝对定位 */}
+      <div className="relative w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden"
+           style={{ background: 'var(--color-surface-primary, #fff)' }}
+           onClick={e => e.stopPropagation()}>
 
-        {/* ── 顶部色带（渐变）── */}
-        <div className="h-1 w-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400" />
+        {/* ── 顶部色带 ── */}
+        <div className="h-1 w-full"
+             style={{ background: 'linear-gradient(90deg,#f59e0b,#fb923c,#f59e0b)' }} />
+
+        {/* ══ 成功态覆盖（操作完成后短暂显示）══ */}
+        {doneState && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-2xl"
+               style={{ background: doneState === 'unbound' ? '#d1fae5' : '#fee2e2' }}>
+            <span className="text-4xl">{doneState === 'unbound' ? '✅' : '🗑️'}</span>
+            <p className="text-sm font-bold"
+               style={{ color: doneState === 'unbound' ? '#065f46' : '#991b1b' }}>
+              {doneState === 'unbound' ? '凭证已解绑并移入凭证池' : '凭证已彻底删除'}
+            </p>
+          </div>
+        )}
 
         {/* ── 头部 ── */}
         <div className="flex items-start justify-between px-5 pt-5 pb-1">
@@ -192,15 +263,13 @@ export default function UnbindingModal() {
               </p>
             </div>
           </div>
-          {/* 关闭按钮（处理中时隐藏，避免误操作）*/}
-          {!isProcessing && (
+          {!isProcessing && !isHardDeleting && !doneState && (
             <button
               type="button"
               onClick={handleClose}
-              className="w-7 h-7 flex items-center justify-center rounded-full
+              className="w-7 h-7 flex items-center justify-center rounded-full flex-shrink-0 -mt-0.5
                          text-content-tertiary hover:text-content-primary
-                         hover:bg-surface-secondary transition-colors text-lg leading-none
-                         flex-shrink-0 -mt-0.5"
+                         hover:bg-surface-secondary transition-colors text-lg leading-none"
             >
               ×
             </button>
@@ -210,18 +279,16 @@ export default function UnbindingModal() {
         {/* ── 内容区 ── */}
         <div className="px-5 py-4 space-y-3">
 
-          {/* 凭证预览卡片（有 URL 时展示缩略图）*/}
+          {/* 凭证预览 */}
           {unbindTarget.evidenceUrl ? (
             <div className="flex items-center gap-3 px-3 py-2.5
                             bg-surface-secondary rounded-xl border border-border-primary">
               <img
                 src={unbindTarget.evidenceUrl}
                 alt="凭证预览"
-                className="w-14 h-14 rounded-lg object-cover flex-shrink-0
-                           border border-border-primary"
-                onError={(e) => {
-                  // 图片加载失败时替换为占位图标
-                  ;(e.currentTarget as HTMLImageElement).replaceWith(
+                className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-border-primary"
+                onError={e => {
+                  (e.currentTarget as HTMLImageElement).replaceWith(
                     Object.assign(document.createElement('div'), {
                       className: 'w-14 h-14 rounded-lg bg-surface-tertiary flex items-center justify-center text-2xl flex-shrink-0',
                       textContent: '📎',
@@ -237,7 +304,6 @@ export default function UnbindingModal() {
               </div>
             </div>
           ) : (
-            // 无预览图时展示纯文本凭证信息
             <div className="px-3 py-2.5 bg-surface-secondary rounded-xl border border-border-primary">
               <p className="text-[11px] text-content-tertiary">凭证 ID</p>
               <p className="text-xs font-mono text-content-secondary mt-0.5 break-all">
@@ -246,92 +312,107 @@ export default function UnbindingModal() {
             </div>
           )}
 
-          {/* ── 主说明区（Soft Unbind 语义）── */}
-          <div className="px-3 py-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
-
-            {/* 软解绑说明 */}
-            <p className="text-xs text-amber-800 leading-relaxed">
-              💔 凭证将从该账单<strong>解除关联</strong>，并以 <strong>orphan（孤立）</strong> 状态保留在凭证池中。文件不会被删除，可在「治理中心 → 凭证管理」中找回或重新挂载。
+          {/* 软解绑说明（琥珀色区块）*/}
+          <div className="px-3 py-3 rounded-xl space-y-2"
+               style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+            <p className="text-xs leading-relaxed" style={{ color: '#92400e' }}>
+              💔 凭证将从该账单<strong>解除关联</strong>，以 <strong>orphan</strong> 状态保留在凭证池。
+              文件不删除，可在「治理中心 → 凭证管理」找回或重新挂载。
             </p>
-
-            {/* 最后一张凭证额外警告（查询完成后才显示，避免闪烁）*/}
             {isLastEvidence === true && (
-              <div className="pt-2 border-t border-amber-200">
-                <p className="text-xs text-orange-700 font-semibold leading-relaxed">
-                  ⚡ 这是该账单的<strong>最后一张凭证</strong>。
-                </p>
-                <p className="text-xs text-orange-600 leading-relaxed mt-0.5">
-                  解绑后，系统将自动执行<strong>历史回改</strong>：账单核实状态回退为「未核实」，该账单将重新出现在冲突中心的「待验证」队列，等待重新补传凭证。
+              <div className="pt-2" style={{ borderTop: '1px solid #fde68a' }}>
+                <p className="text-xs font-semibold" style={{ color: '#c05621' }}>
+                  ⚡ 这是该账单的<strong>最后一张凭证</strong>。解绑后账单核实状态将回退为「未核实」。
                 </p>
               </div>
             )}
           </div>
 
-          {/* 错误提示 */}
-          {errorMsg && (
-            <div className="px-3 py-2.5 bg-red-50 border border-red-300 rounded-xl
-                            flex items-start gap-2">
-              <span className="text-sm flex-shrink-0 mt-0.5">🔴</span>
-              <p className="text-xs text-red-600 leading-snug">{errorMsg}</p>
-            </div>
+          {/* 硬删除入口（红色次要按钮）*/}
+          {!isProcessing && !doneState && (
+            <button
+              type="button"
+              onClick={() => setShowHardConfirm(true)}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl
+                         text-xs font-semibold transition-all"
+              style={{
+                background: '#fff1f2',
+                border: '1.5px solid #fecdd3',
+                color: '#be123c',
+              }}
+            >
+              <span>🗑️</span>
+              <span>彻底删除（永久抹除，不可撤销）</span>
+            </button>
           )}
 
+          {/* 错误提示 */}
+          {errorMsg && (
+            <div className="px-3 py-2.5 rounded-xl flex items-start gap-2"
+                 style={{ background: '#fff1f2', border: '1px solid #fecdd3' }}>
+              <span className="text-sm flex-shrink-0 mt-0.5">🔴</span>
+              <p className="text-xs leading-snug" style={{ color: '#be123c' }}>{errorMsg}</p>
+            </div>
+          )}
         </div>
 
-        {/* ── 底部操作区 ── */}
-        <div className="flex items-center gap-2 px-5 pb-5">
+        {/* ── 底部操作区（软解绑）── */}
+        {!doneState && (
+          <div className="flex items-center gap-2 px-5 pb-5">
 
-          {/* 取消按钮 */}
-          <button
-            type="button"
-            onClick={handleClose}
-            disabled={isProcessing}
-            className="flex-1 py-2.5 rounded-xl text-sm font-medium
-                       bg-surface-secondary text-content-secondary
-                       hover:bg-surface-tertiary active:bg-surface-secondary
-                       transition-colors
-                       disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            取消
-          </button>
+            {/* 取消 */}
+            <button
+              type="button"
+              onClick={handleClose}
+              disabled={isProcessing || isHardDeleting}
+              className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: '#f1f5f9', color: '#475569' }}
+            >
+              取消
+            </button>
 
-          {/* 确认解绑按钮（含倒计时防呆 + loading 态）*/}
-          <button
-            type="button"
-            onClick={() => { void handleConfirm() }}
-            disabled={!canConfirm}
-            className={[
-              'flex-1 py-2.5 rounded-xl text-sm font-semibold',
-              'flex items-center justify-center gap-2',
-              'transition-all duration-300',
-              canConfirm
-                ? 'bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white shadow-sm cursor-pointer'
-                : 'bg-amber-100 text-amber-300 cursor-not-allowed',
-            ].join(' ')}
-          >
-            {isProcessing ? (
-              // 处理中：旋转加载圈
-              <>
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>解绑中…</span>
-              </>
-            ) : countdown > 0 ? (
-              // 倒计时中：进度环 + 剩余秒数
-              <>
-                <CountdownRing current={countdown} total={COUNTDOWN_SEC} size={20} />
-                <span>{countdown} 秒后可操作</span>
-              </>
-            ) : (
-              // 可点击状态
-              <>
-                <span className="text-base leading-none">💔</span>
-                <span>确认解绑（保留至凭证池）</span>
-              </>
-            )}
-          </button>
+            {/* 确认解绑（含倒计时防呆）*/}
+            <button
+              type="button"
+              onClick={() => { void handleConfirm() }}
+              disabled={!canConfirm}
+              className="flex-1 py-2.5 rounded-xl text-sm font-semibold
+                         flex items-center justify-center gap-2 transition-all duration-300"
+              style={canConfirm
+                ? { background: '#f59e0b', color: '#fff', cursor: 'pointer' }
+                : { background: '#fef3c7', color: '#d97706', cursor: 'not-allowed' }
+              }
+            >
+              {isProcessing ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white
+                                   rounded-full animate-spin" />
+                  <span>解绑中…</span>
+                </>
+              ) : countdown > 0 ? (
+                <>
+                  <CountdownRing current={countdown} total={COUNTDOWN_SEC} size={20} />
+                  <span>{countdown} 秒后可操作</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-base leading-none">💔</span>
+                  <span>确认解绑（保留至凭证池）</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
-        </div>
-
+        {/* ── 二次确认层（彻底删除）── */}
+        {showHardConfirm && (
+          <HardDeleteConfirmLayer
+            onConfirm={() => { void handleHardDelete() }}
+            onCancel={() => { if (!isHardDeleting) setShowHardConfirm(false) }}
+            isDeleting={isHardDeleting}
+          />
+        )}
       </div>
     </div>
   )

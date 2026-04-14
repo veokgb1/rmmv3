@@ -21,11 +21,17 @@ import {
   analyzeReceipt,
   parseNaturalLanguageBatch,
 }                              from '@/services/aiService'
+import { linkEvidenceToTransaction, subscribeEvidences, softUnbindByUrl } from '@/services/firebase/evidenceService'
 import { useLedgerStore }      from '@/store/ledgerStore'
 import { useAuthStore }        from '@/store/authStore'
+import { useGovernanceStore }  from '@/store/governanceStore'
 import { getCurrencySymbol, CURRENCY_SYMBOLS } from '@/utils/numberUtils'
+import { StorageImage }        from '@/components/ui/StorageImage'
+import PoolPickerModal         from '@/modals/PoolPickerModal'
+import AppendAmountModal       from '@/modals/AppendAmountModal'
 import type { SystemCategory } from '@/types/Category.types'
 import type { Transaction }    from '@/types/Transaction.types'
+import type { Evidence }       from '@/types/Evidence.types'
 
 // ─────────────────────────────────────────────────────────────
 // 分类常量
@@ -932,6 +938,32 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
   const [showCatInput,   setShowCatInput]   = useState(false)
   const [customCatInput, setCustomCatInput] = useState('')
 
+  // ── 凭证池关联状态 ────────────────────────────────────────
+  const [showPoolPicker,     setShowPoolPicker]     = useState(false)
+  const [pendingPoolEvidence,setPendingPoolEvidence] = useState<Evidence | null>(null)  // 已选但待确认
+  const [isLinking,          setIsLinking]          = useState(false)  // 关联请求中
+
+  // ── 本地凭证 URL 列表（路径 A 同步修复）─────────────────────
+  // editTx.receiptUrls 是来自 Firestore 的 prop，关联操作后不会自动更新。
+  // 维护本地 localReceiptUrls：初始化为 editTx.receiptUrls，关联成功后本地追加。
+  // 展示时合并两个来源，确保新关联的图片立即可见且 💔 按钮有效。
+  const [localReceiptUrls, setLocalReceiptUrls] = useState<string[]>([])
+
+  // ── 解绑入口：storageUrl → evidenceId 映射（编辑模式专用）──
+  // 订阅当前编辑账单的 evidences，建立 url→id 映射，供缩略图解绑按钮使用
+  const [urlToEvId, setUrlToEvId] = useState<Record<string, string>>({})
+  const openUnbindModal = useGovernanceStore(s => s.openUnbindModal)
+
+  useEffect(() => {
+    if (!editTx?.id) { setUrlToEvId({}); return }
+    const unsub = subscribeEvidences(editTx.id, (evs) => {
+      const map: Record<string, string> = {}
+      evs.forEach(ev => { if (ev.status === 'ok') map[ev.storageUrl] = ev.id })
+      setUrlToEvId(map)
+    })
+    return unsub
+  }, [editTx?.id])
+
   type SubmitState = 'idle' | 'saving' | 'success' | 'error'
   const [submitState, setSubmitState] = useState<SubmitState>('idle')
   const [errorMsg,    setErrorMsg]    = useState('')
@@ -968,6 +1000,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
       setErrorMsg('')
       setShowCatInput(false)
       setCustomCatInput('')
+      setLocalReceiptUrls([])  // 重置本地追加列表（新开弹窗时清空）
       if (editTx) {
         setTxType(editTx.amount > 0 ? 'income' : 'expense')
         setAmountStr(String(Math.abs(editTx.amount)))
@@ -1033,6 +1066,77 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
     setCategory(name)
     setShowCatInput(false)
     setCustomCatInput('')
+  }
+
+  // ── 凭证池：用户选中一张凭证 ──────────────────────────────
+  function handlePoolSelect(ev: Evidence): void {
+    setShowPoolPicker(false)
+    const hasExistingReceipts = (editTx?.receiptUrls?.length ?? 0) >= 1
+    if (hasExistingReceipts) {
+      // 已有凭证 → 弹出金额合并确认
+      setPendingPoolEvidence(ev)
+    } else {
+      // 无现有凭证 → 直接关联
+      void handlePoolLinkConfirm(ev, null)
+    }
+  }
+
+  // ── 凭证池：AppendAmountModal 确认后执行关联 ───────────────
+  async function handlePoolLinkConfirm(
+    ev: Evidence,
+    newAmount: number | null,
+  ): Promise<void> {
+    if (!editTx) return
+    setPendingPoolEvidence(null)
+    setIsLinking(true)
+    setErrorMsg('')
+    try {
+      const { storageUrl } = await linkEvidenceToTransaction(ev.id, editTx.id)
+
+      // 路径 A 同步：关联成功后本地立即追加 URL，使缩略图与 💔 按钮立即可用
+      // （editTx.receiptUrls 是 prop 不自动更新，urlToEvId 由 subscribeEvidences 自动更新）
+      setLocalReceiptUrls(prev =>
+        prev.includes(storageUrl) ? prev : [...prev, storageUrl]
+      )
+
+      // 若用户选择了合并金额，更新表单金额字段（实际保存时通过 onSaveEdit 写入）
+      if (newAmount !== null) {
+        setAmountStr(String(Math.abs(newAmount)))
+        setTxType(newAmount > 0 ? 'income' : 'expense')
+        showToast?.(`✅ 凭证已关联，金额已合并为 ¥${String(Math.abs(newAmount))}`, 'success')
+      } else {
+        showToast?.('✅ 凭证已关联至账单', 'success')
+      }
+    } catch (e) {
+      showToast?.('❌ 凭证关联失败，请重试', 'error')
+      setErrorMsg(e instanceof Error ? e.message : '凭证关联失败，请重试')
+    } finally {
+      setIsLinking(false)
+    }
+  }
+
+  // ── V2 历史数据直接软解绑（无 evidenceId）─────────────────
+  async function handleV2SoftUnbind(url: string): Promise<void> {
+    if (!editTx) return
+    const ok = window.confirm(
+      '确认解绑此凭证？\n凭证将保留至凭证池（Pool B），可在治理中心找回。'
+    )
+    if (!ok) return
+    setIsLinking(true)
+    setErrorMsg('')
+    try {
+      await softUnbindByUrl(editTx.id, url, {
+        date:     editTx.date,
+        category: editTx.category,
+        amount:   editTx.amount,
+        ledgerId: activeLedgerId,
+      })
+      showToast?.('💔 凭证已解绑并移入凭证池', 'success')
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : '解绑失败，请重试')
+    } finally {
+      setIsLinking(false)
+    }
   }
 
   function validate(): string | null {
@@ -1279,6 +1383,126 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
                   />
                 </div>
 
+                {/* ── 凭证管理区（仅编辑模式显示）────────────── */}
+                {editTx && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-xs font-semibold text-slate-600">
+                        凭证图片
+                        {(editTx.receiptUrls?.length ?? 0) > 0 && (
+                          <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-slate-200
+                                           text-slate-500 text-[9px] font-bold">
+                            {editTx.receiptUrls!.length} 张
+                          </span>
+                        )}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowPoolPicker(true)}
+                        disabled={isLinking}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold
+                                   bg-teal-50 text-teal-700 border border-teal-200
+                                   hover:bg-teal-100 transition-colors
+                                   disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isLinking ? (
+                          <><span className="w-3 h-3 border-2 border-teal-400/40 border-t-teal-600 rounded-full animate-spin" /><span>关联中…</span></>
+                        ) : (
+                          <><span>🗄️</span><span>从凭证池关联</span></>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* ── 凭证缩略图列表 ──────────────────────────────────
+                        合并：editTx.receiptUrls ∪ localReceiptUrls（去重）
+                        localReceiptUrls 路径 A 关联后即时追加，无需等待 prop 更新  */}
+                    {((): string[] => {
+                      const base = editTx.receiptUrls ?? []
+                      return [...base, ...localReceiptUrls.filter(u => !base.includes(u))]
+                    })().length > 0 ? (() => {
+                      const base   = editTx.receiptUrls ?? []
+                      const merged = [...base, ...localReceiptUrls.filter(u => !base.includes(u))]
+                      return (
+                        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+                          {merged.map((url, i) => {
+                            const evId = urlToEvId[url]
+                            return (
+                              <div
+                                key={url}
+                                className="relative flex-shrink-0 rounded-xl overflow-hidden"
+                                style={{ width: 56, height: 56 }}
+                              >
+                                {/* 缩略图 */}
+                                <StorageImage
+                                  path={url}
+                                  alt={`凭证 ${i + 1}`}
+                                  className="w-full h-full object-cover"
+                                />
+
+                                {/* ── 解绑药丸标签（底部覆盖条）──
+                                    · 定位底部全宽，不遮挡图片中央内容
+                                    · inline style 保证颜色不被 PurgeCSS 剔除
+                                    · hover:scale-105 提升可点击感知
+                                    · evId 有无决定走哪条解绑路径               */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (evId) {
+                                      openUnbindModal({
+                                        evidenceId:    evId,
+                                        transactionId: editTx.id,
+                                        evidenceUrl:   url,
+                                        onSuccess: (action) => {
+                                          showToast?.(
+                                            action === 'unbound'
+                                              ? '✅ 凭证已解绑并移入凭证池'
+                                              : '🗑️ 凭证已彻底删除',
+                                            'success',
+                                          )
+                                        },
+                                      })
+                                    } else {
+                                      void handleV2SoftUnbind(url)
+                                    }
+                                  }}
+                                  className="absolute bottom-0 inset-x-0 z-10
+                                             flex items-center justify-center gap-0.5
+                                             py-0.5 text-white font-bold
+                                             transition-transform hover:scale-105 active:scale-95"
+                                  style={{
+                                    background: 'rgba(245,158,11,0.88)',
+                                    fontSize: 9,
+                                    lineHeight: '14px',
+                                  }}
+                                  title={evId
+                                    ? '解绑此凭证（保留至凭证池）'
+                                    : '解绑 V2 历史凭证（保留至凭证池）'
+                                  }
+                                >
+                                  {/* Unlink SVG icon */}
+                                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none"
+                                       stroke="currentColor" strokeWidth="2.5"
+                                       strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                                    <line x1="5" y1="5" x2="19" y2="19"/>
+                                  </svg>
+                                  <span>解绑</span>
+                                </button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )
+                    })() : (
+                      <div className="flex items-center justify-center h-12
+                                      bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+                        <p className="text-xs text-slate-400">暂无凭证，可从凭证池关联</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <p className="text-xs font-semibold text-content-secondary mb-1.5">分类</p>
                   <div className="flex flex-wrap gap-1.5">
@@ -1433,6 +1657,28 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
 
         </div>
       </div>{/* Modal 本体结束 */}
+
+      {/* ═══ 凭证池选择器（z-[630]，在 Modal z-[500] 之上）═══ */}
+      {showPoolPicker && editTx && (
+        <PoolPickerModal
+          ledgerId={activeLedgerId}
+          onSelect={handlePoolSelect}
+          onClose={() => setShowPoolPicker(false)}
+        />
+      )}
+
+      {/* ═══ 金额合并确认（z-[620]，等待 AppendAmountModal 结果）═══ */}
+      {pendingPoolEvidence && editTx && (
+        <AppendAmountModal
+          originalAmount={editTx.amount}
+          evidenceUrl={pendingPoolEvidence.storageUrl}
+          onConfirm={({ newAmount }) => {
+            void handlePoolLinkConfirm(pendingPoolEvidence, newAmount)
+          }}
+          onCancel={() => setPendingPoolEvidence(null)}
+        />
+      )}
+
     </div>
   )
 }
