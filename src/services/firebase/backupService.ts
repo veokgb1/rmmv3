@@ -17,9 +17,11 @@
 import {
   collection, getDocs, query, where,
   doc, setDoc, getDoc, writeBatch,
+  updateDoc, arrayRemove,
   type QueryDocumentSnapshot,
   type DocumentData,
 } from 'firebase/firestore'
+import { batchDeleteTransactionsDeep } from '@/services/firebase/billService'
 import {
   ref as storageRef,
   uploadBytes,
@@ -40,7 +42,7 @@ export const BACKUP_TYPE_META: Record<BackupType, {
   desc:  string
 }> = {
   full:     { label: '正式库全量备份 (Transactions + Evidences)', icon: '🗄️', desc: '账套内所有 transactions + evidences' },
-  conflict: { label: '冲突中心备份 (B)',   icon: '⚠️',  desc: '待验证记录及其关联凭证 (status=expected)' },
+  conflict: { label: '冲突中心备份 (B)',   icon: '⚠️',  desc: '待验证记录及其关联凭证 (isVerified !== true)' },
   poolA:    { label: '凭证池 A 备份 (C)',  icon: '📥', desc: '收件箱未处理照片 (status=unprocessed)' },
   poolB:    { label: '凭证池 B 备份 (D)',  icon: '🗂️', desc: '解绑/孤儿照片 (orphan + replaced)' },
 }
@@ -79,6 +81,9 @@ export const DELETE_MODULE_META: Record<DeleteModule, {
   label:      string
   icon:       string
   hasStorage: boolean    // 是否需要同步删除 Firebase Storage 文件
+  // manual / v2import: hasStorage=false，因为 executeDelete 使用 batchDeleteTransactionsDeep
+  //   该函数内部自行处理 evidence + Storage 清理，无需此标志控制。
+  // evidenceOk / poolA / poolB: hasStorage=true，executeDelete 收集 storagePaths 后统一删除。
 }> = {
   manual:     { label: '手动入账记录',       icon: '✍️', hasStorage: false },
   v2import:   { label: 'V2 迁移记录',        icon: '📦', hasStorage: false },
@@ -325,28 +330,71 @@ export async function executeDelete(
 
   const txCol = collection(db, 'transactions')
   const evCol = collection(db, 'evidences')
+  let totalDeleted = 0
 
-  // ── 收集所有待删除文档 ─────────────────────────────────────
-  onProgress?.('读取待删除记录数量…')
+  // ════════════════════════════════════════════════════════════
+  // 阶段 1：Transaction 级模块（manual / v2import）
+  //
+  // ⚠️ P0-B 修复：必须使用 batchDeleteTransactionsDeep 而非直接 writeBatch.delete
+  //
+  // 原因：直接删 tx 文档会留下 status='ok' 的僵尸凭证——
+  //   evidence.transactionId 指向已不存在的账单，永远不进入 Pool B。
+  //
+  // batchDeleteTransactionsDeep 执行顺序（per txId）：
+  //   1. 查询关联 evidences → 2. 删 Storage → 3. 删 evidence doc → 4. 删 tx doc
+  // ════════════════════════════════════════════════════════════
+  const txModules = modules.filter(
+    (m): m is 'manual' | 'v2import' => m === 'manual' || m === 'v2import'
+  )
 
-  const allDocs:  QueryDocumentSnapshot<DocumentData>[] = []
-  const storagePaths: string[] = []
+  for (const mod of txModules) {
+    const sourceType = mod === 'manual' ? 'manual' : 'V2_to_V3'
+    onProgress?.(`读取 ${DELETE_MODULE_META[mod].label} 记录…`)
 
-  for (const mod of modules) {
+    const txSnap = await getDocs(
+      query(txCol, where('ledgerId', '==', ledgerId), where('sourceType', '==', sourceType))
+    )
+    const txIds = txSnap.docs.map(d => d.id)
+    if (txIds.length === 0) continue
+
+    onProgress?.(`深度删除 ${DELETE_MODULE_META[mod].label}（含关联凭证）— ${txIds.length} 条…`)
+    const result = await batchDeleteTransactionsDeep(txIds, (done, total) => {
+      onProgress?.(`${DELETE_MODULE_META[mod].label}：已删除 ${done} / ${total}…`)
+    })
+    totalDeleted += result.deleted
+    if (result.errors.length > 0) {
+      console.warn(`[backupService] ${mod} 部分删除失败（已跳过）:`, result.errors)
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // 阶段 2：Evidence 级模块（evidenceOk / poolA / poolB）
+  // ════════════════════════════════════════════════════════════
+  const evModules = modules.filter(
+    (m): m is 'evidenceOk' | 'poolA' | 'poolB' =>
+      m === 'evidenceOk' || m === 'poolA' || m === 'poolB'
+  )
+
+  if (evModules.length === 0) return totalDeleted
+
+  // ── 收集待删除凭证文档 ────────────────────────────────────
+  onProgress?.('读取待删除凭证记录数量…')
+  const evDocs:      QueryDocumentSnapshot<DocumentData>[] = []
+  const storagePaths: string[]                             = []
+
+  for (const mod of evModules) {
     let snaps: QueryDocumentSnapshot<DocumentData>[] = []
 
     switch (mod) {
-      case 'manual':
-        snaps = (await getDocs(query(txCol, where('ledgerId', '==', ledgerId), where('sourceType', '==', 'manual')))).docs
-        break
-      case 'v2import':
-        snaps = (await getDocs(query(txCol, where('ledgerId', '==', ledgerId), where('sourceType', '==', 'V2_to_V3')))).docs
-        break
       case 'evidenceOk':
-        snaps = (await getDocs(query(evCol, where('ledgerId', '==', ledgerId), where('status', '==', 'ok')))).docs
+        snaps = (await getDocs(
+          query(evCol, where('ledgerId', '==', ledgerId), where('status', '==', 'ok'))
+        )).docs
         break
       case 'poolA':
-        snaps = (await getDocs(query(evCol, where('ledgerId', '==', ledgerId), where('status', '==', 'unprocessed')))).docs
+        snaps = (await getDocs(
+          query(evCol, where('ledgerId', '==', ledgerId), where('status', '==', 'unprocessed'))
+        )).docs
         break
       case 'poolB': {
         const [s1, s2] = await Promise.all([
@@ -358,43 +406,74 @@ export async function executeDelete(
       }
     }
 
-    // 收集需要同步删除 Storage 文件的凭证路径
-    if (DELETE_MODULE_META[mod].hasStorage) {
-      snaps.forEach(d => {
-        const sp = d.data()['storagePath'] as string | undefined
-        if (sp) storagePaths.push(sp)
-      })
-    }
-
-    allDocs.push(...snaps)
+    snaps.forEach(d => {
+      const sp = d.data()['storagePath'] as string | undefined
+      if (sp) storagePaths.push(sp)
+    })
+    evDocs.push(...snaps)
   }
 
-  const total = allDocs.length
-  if (total === 0) return 0
+  if (evDocs.length === 0) return totalDeleted
+
+  // ── P0-C 修复：evidenceOk 删除前同步清理 Transaction.receiptUrls ──
+  //
+  // 原因：直接删 evidence doc 会在父账单的 receiptUrls 数组中留下死链 URL。
+  //   账单仍显示 receiptUrls.length > 0（实则 Storage 文件已不存在）→ 破图 + 误判无冲突。
+  //
+  // 只有 status='ok' 的凭证才有 transactionId 指向真实账单；
+  // Pool A/B 的 transactionId 通常已为 '' 或指向已解绑账单，无需处理。
+  const okEvidenceDocs = evDocs.filter(d => (d.data()['status'] as string) === 'ok')
+  if (okEvidenceDocs.length > 0) {
+    onProgress?.(`同步清理 ${okEvidenceDocs.length} 条已绑定凭证的 receiptUrls 死链…`)
+
+    // 按 transactionId 分组，合并同一账单的多条 URL
+    const txUrlGroups = new Map<string, string[]>()
+    for (const d of okEvidenceDocs) {
+      const data  = d.data()
+      const txId  = data['transactionId'] as string | undefined
+      const url   = data['storageUrl']    as string | undefined
+      if (txId && url) {
+        if (!txUrlGroups.has(txId)) txUrlGroups.set(txId, [])
+        txUrlGroups.get(txId)!.push(url)
+      }
+    }
+
+    // allSettled：个别账单不存在（已被删）时静默跳过，不中断流程
+    await Promise.allSettled(
+      Array.from(txUrlGroups.entries()).map(([txId, urls]) =>
+        updateDoc(doc(db, 'transactions', txId), {
+          receiptUrls: arrayRemove(...urls),
+          updatedAt:   Date.now(),
+        })
+      )
+    )
+    console.debug(`[backupService] receiptUrls 死链已清理 — ${txUrlGroups.size} 条账单`)
+  }
 
   // ── 物理抹除 Firebase Storage 图片文件 ────────────────────
   if (storagePaths.length > 0) {
     onProgress?.(`物理抹除 ${storagePaths.length} 个图片文件…`)
-    // Promise.allSettled：部分文件已删除或不存在时继续执行，不中断流程
+    // allSettled：部分文件已删除或不存在时继续执行，不中断流程
     await Promise.allSettled(
       storagePaths.map(sp => deleteObject(storageRef(storage, sp)))
     )
   }
 
-  // ── Firestore 分批删除（上限 499 条/batch）─────────────────
+  // ── Firestore 分批删除凭证文档（上限 499 条/batch）──────────
   const BATCH_SIZE = 499
-  let   deleted    = 0
+  let   evDeleted  = 0
 
-  for (let i = 0; i < allDocs.length; i += BATCH_SIZE) {
-    const chunk = allDocs.slice(i, i + BATCH_SIZE)
+  for (let i = 0; i < evDocs.length; i += BATCH_SIZE) {
+    const chunk = evDocs.slice(i, i + BATCH_SIZE)
     const batch = writeBatch(db)
     chunk.forEach(d => batch.delete(d.ref))
     await batch.commit()
-    deleted += chunk.length
-    onProgress?.(`删除 Firestore 记录 ${deleted} / ${total}…`)
+    evDeleted += chunk.length
+    onProgress?.(`删除凭证记录 ${evDeleted} / ${evDocs.length}…`)
   }
+  totalDeleted += evDocs.length
 
-  return total
+  return totalDeleted
 }
 
 // ════════════════════════════════════════════════════════════════

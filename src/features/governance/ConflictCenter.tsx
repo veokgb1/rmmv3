@@ -17,10 +17,11 @@ import {
   archiveTransaction,
   mergeTransactions,
   confirmNoEvidence,
-  attachEvidenceUrl,
   batchForceAdd,
   batchConfirmNoEvidence,
 } from '@/services/firebase/governanceService'
+// attachEvidenceUrl 已移除：uploadEvidence 内部已原子同步 receiptUrls（arrayUnion），
+// 此处无需二次写入。移除后节省一次 Firestore 写计费并消除逻辑意图歧义。
 import { uploadEvidence, validateFile } from '@/services/firebase/evidenceService'
 import { formatAmount }               from '@/utils/numberUtils'
 import ReceiptPool                    from '@/features/governance/ReceiptPool'
@@ -902,9 +903,9 @@ export default function ConflictCenter() {
         (pct) => setUploadProgress(pct),
       )
 
-      // 阶段 2：将 storageUrl 追加到 transaction.receiptUrls
-      // → 使账单满足 receiptUrls.length > 0 → detectConflicts 自动移出 no_evidence 队列
-      await attachEvidenceUrl(tx.id, evidence.storageUrl, user.uid)
+      // ✅ receiptUrls 同步由 uploadEvidence 内部原子完成（arrayUnion），
+      // 无需再调用 attachEvidenceUrl。detectConflicts 依赖 onSnapshot 驱动，
+      // 上方 uploadEvidence 返回后 receiptUrls 已更新，UI 将自动移出 no_evidence 队列。
 
       selectConflict(null)
       showSuccess(`✅ 凭证「${file.name}」已上传，缺凭证状态已解除`)

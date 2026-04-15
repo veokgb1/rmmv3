@@ -83,9 +83,11 @@ function buildStoragePath(ledgerId: string, txId: string, fileName: string): str
  * 执行步骤：
  *   1. 构建 Storage 路径
  *   2. uploadBytesResumable 上传（触发进度回调）
+ *      → 失败时：写入 status='error' 的 evidence 文档（P2-B 可追溯），再 throw
  *   3. getDownloadURL 获取下载链接
- *   4. addDoc 写入 Firestore evidences 集合
- *   5. 返回完整 Evidence 对象（供 UI 立即展示）
+ *   4. addDoc 写入 Firestore evidences 集合（status='ok'）
+ *   5. updateDoc 同步 Transaction.receiptUrls（arrayUnion）
+ *   6. 返回完整 Evidence 对象（供 UI 立即展示）
  *
  * @param file        待上传的 File 对象（调用前请先用 validateFile 校验）
  * @param txId        关联账单的 Firestore 文档 ID
@@ -104,23 +106,49 @@ export async function uploadEvidence(
   const storageRef  = ref(storage, storagePath)
 
   // 阶段 1：上传文件到 Firebase Storage（监听进度）
-  await new Promise<void>((resolve, reject) => {
-    const task = uploadBytesResumable(storageRef, file, { contentType: file.type })
-    task.on(
-      'state_changed',
-      (snap) => {
-        const percent = Math.round((snap.bytesTransferred / snap.totalBytes) * 100)
-        onProgress?.(percent)
-      },
-      reject,   // 上传失败 → reject Promise
-      resolve,  // 上传完成 → resolve Promise
-    )
-  })
+  // P2-B：Storage 上传失败时写入 status='error' 的 evidence 文档，使治理中心可追溯
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const task = uploadBytesResumable(storageRef, file, { contentType: file.type })
+      task.on(
+        'state_changed',
+        (snap) => {
+          const percent = Math.round((snap.bytesTransferred / snap.totalBytes) * 100)
+          onProgress?.(percent)
+        },
+        reject,   // 上传失败 → reject Promise
+        resolve,  // 上传完成 → resolve Promise
+      )
+    })
+  } catch (uploadErr) {
+    // 写入 error 记录，供治理中心展示"上传失败"条目，用户可从此处发起重传
+    const errorMsg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr)
+    try {
+      await addDoc(collection(db, 'evidences'), {
+        transactionId: txId,
+        ledgerId,
+        uploadedBy,
+        fileName:      file.name,
+        storageUrl:    '',          // 无 URL（上传失败）
+        storagePath,
+        fileType:      file.type,
+        fileSizeBytes: file.size,
+        uploadedAt:    Date.now(),
+        status:        'error' as const,
+        errorMessage:  errorMsg,
+      })
+      console.warn(`[evidenceService] Storage 上传失败，已写入 error 记录 txId=${txId}: ${errorMsg}`)
+    } catch (writeErr) {
+      // error 记录写入失败仅打日志，不掩盖原始 Storage 错误
+      console.error('[evidenceService] error 记录写入失败:', writeErr)
+    }
+    throw uploadErr   // 将原始 Storage 错误继续向调用方抛出
+  }
 
   // 阶段 2：获取公开下载 URL
   const storageUrl = await getDownloadURL(storageRef)
 
-  // 阶段 3：写入 Firestore evidences 集合
+  // 阶段 3：写入 Firestore evidences 集合（status='ok'）
   // 使用客户端时间戳（Date.now()）保持与 Evidence.uploadedAt: number 类型一致
   const now = Date.now()
   const payload = {
@@ -138,6 +166,20 @@ export async function uploadEvidence(
 
   const docRef = await addDoc(collection(db, 'evidences'), payload)
   console.debug(`[evidenceService] 凭证已上传 txId=${txId} docId=${docRef.id}`)
+
+  // 阶段 4：原子同步 Transaction.receiptUrls（arrayUnion）
+  //
+  // OmniInputModal 编辑模式缩略图读取的是 Transaction.receiptUrls（onSnapshot 驱动），
+  // 此处同步写入后 💔 解绑按钮即可出现，无需调用方额外调用 attachEvidenceUrl。
+  // txId 为空串时（uploadToPool 路径）跳过，避免写入孤立事务。
+  if (txId) {
+    const txRef = doc(db, 'transactions', txId)
+    await updateDoc(txRef, {
+      receiptUrls: arrayUnion(storageUrl),
+      updatedAt:   Date.now(),
+    })
+    console.debug(`[evidenceService] Transaction.receiptUrls 已原子同步 txId=${txId}`)
+  }
 
   return { id: docRef.id, ...payload }
 }

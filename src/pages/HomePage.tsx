@@ -38,6 +38,9 @@ import { useSearchBills } from '@/hooks/useSearchBills'
 import { batchDeleteTransactionsDeep } from '@/services/firebase/billService'
 import { updateTransaction }           from '@/services/firebase/billService'
 
+// 凭证软解绑（状态机驱动：ok → orphan → Pool B）
+import { softUnbindByUrl } from '@/services/firebase/evidenceService'
+
 // 共享 UI 组件
 import { ThumbnailImage } from '@/components/ui/StorageImage'
 import { StorageImage }   from '@/components/ui/StorageImage'
@@ -416,23 +419,61 @@ function HomePage() {
     }
   }
 
-  // 解绑凭证：清空选中账单的 receiptUrls（保留 Storage 文件，保留账单）
+  // 解绑凭证：通过状态机将凭证软解绑至 Pool B（ok → orphan）
+  //
+  // ⚠️ 禁止直接 updateTransaction({ receiptUrls: [] })：
+  //   那样会留下 status='ok' 的僵尸凭证——既不在任何账单，也不在凭证池，永久孤立。
+  //
+  // 正确路径：softUnbindByUrl → 凭证状态机迁移 → Pool B 可溯源
   const handleUnbindReceipts = async () => {
     if (selectedIds.size === 0) return
     const ids = Array.from(selectedIds)
+
+    // 从全量账单中找到选中条目，统计涉及凭证总数
+    const affectedTxs = allLedgerBills.filter(t => ids.includes(t.id))
+    const totalUrls   = affectedTxs.reduce((sum, t) => sum + (t.receiptUrls?.length ?? 0), 0)
+
+    if (totalUrls === 0) {
+      showToast('选中账单均无凭证绑定，无需解绑', 'warning')
+      return
+    }
+
     const confirmed = window.confirm(
-      `确认解绑选中 ${ids.length} 条账单的凭证关联？\n\n` +
-      `· 仅清除账单上的照片链接，不删除 Storage 文件\n` +
-      `· 账单本体保留`
+      `确认解绑选中 ${ids.length} 条账单的凭证？\n\n` +
+      `· 共 ${totalUrls} 张凭证将移入凭证池 B（可从治理中心找回）\n` +
+      `· 账单本体与 Storage 原始文件均保留\n` +
+      `· 操作通过状态机流转，完整可溯源`
     )
     if (!confirmed) return
-    try {
-      await Promise.all(ids.map(id => updateTransaction(id, { receiptUrls: [] })))
-      setSelectedIds(new Set())
-      showToast(`✅ 已解绑 ${ids.length} 条账单的凭证`, 'success')
-    } catch (e) {
-      showToast('解绑失败，请重试', 'error')
-      console.error('[HomePage] 解绑凭证异常:', e)
+
+    let unbound = 0
+    let failed  = 0
+
+    for (const tx of affectedTxs) {
+      const urls = tx.receiptUrls ?? []
+      for (const url of urls) {
+        try {
+          await softUnbindByUrl(tx.id, url, {
+            date:     tx.date,
+            category: tx.category,
+            amount:   tx.amount,
+            ledgerId: tx.ledgerId,
+          })
+          unbound++
+        } catch (e) {
+          failed++
+          console.error(
+            `[HomePage] softUnbindByUrl 失败 txId=${tx.id} url=${url.slice(0, 60)}:`, e
+          )
+        }
+      }
+    }
+
+    setSelectedIds(new Set())
+    if (failed === 0) {
+      showToast(`✅ 已解绑 ${unbound} 张凭证 → 凭证池 B`, 'success')
+    } else {
+      showToast(`⚠️ 解绑 ${unbound} 张成功，${failed} 张失败（见控制台）`, 'warning')
     }
   }
 
@@ -920,7 +961,7 @@ function HomePage() {
                 ↩ 撤销
               </button>
 
-              {/* 解绑凭证（清空 receiptUrls，保留账单）*/}
+              {/* 解绑凭证（softUnbindByUrl 状态机流转 → Pool B，保留账单与 Storage 文件）*/}
               <button
                 onClick={handleUnbindReceipts}
                 disabled={selectedIds.size === 0 || isBatchDeleting}

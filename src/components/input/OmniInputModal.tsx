@@ -22,7 +22,7 @@ import {
   parseNaturalLanguageBatch,
   type ReceiptAnalysisResult,
 }                              from '@/services/aiService'
-import { linkEvidenceToTransaction, subscribeEvidences, softUnbindByUrl } from '@/services/firebase/evidenceService'
+import { linkEvidenceToTransaction, subscribeEvidences, softUnbindByUrl, uploadEvidence } from '@/services/firebase/evidenceService'
 import { useLedgerStore }      from '@/store/ledgerStore'
 import { useAuthStore }        from '@/store/authStore'
 import { useGovernanceStore }  from '@/store/governanceStore'
@@ -730,8 +730,11 @@ function SmartPanel({ activeLedgerId, onClose, showToast }: SmartPanelProps) {
 // 架构：统一根容器 flex flex-col flex-1 min-h-0，各状态内部弹性滚动
 // ─────────────────────────────────────────────────────────────
 interface OcrPanelProps {
-  /** 单条识别结果时直接填写表单 */
-  onFillForm:     (amount: number, category: SystemCategory, date: string, notes: string) => void
+  /**
+   * 单条识别结果时直接填写表单
+   * imageFile — 同步传递原始图片 File 对象，供主组件在手写 Tab 保存后上传凭证
+   */
+  onFillForm:     (amount: number, category: SystemCategory, date: string, notes: string, imageFile: File | null) => void
   /** 用于批量入账的当前账套 ID */
   activeLedgerId: string
   showToast?:     (msg: string, type?: 'success' | 'warning' | 'error') => void
@@ -748,6 +751,10 @@ function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
   const [analyzingIdx, setAnalyzingIdx] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // ── 关键补丁：保存原始 File 对象（base64 只给 Gemini，File 给 uploadEvidence）──
+  // base64Data 是只读快照，File 对象才有 name/type/size，uploadEvidence 需要 File
+  const [imageFile, setImageFile] = useState<File | null>(null)
+
   // ── 批量确认态专属状态 ──────────────────────────────────────
   const [ocrBatch,      setOcrBatch]      = useState<ReceiptAnalysisResult[]>([])
   const [selectedIdxs,  setSelectedIdxs]  = useState<Set<number>>(new Set())
@@ -762,6 +769,8 @@ function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     if (file.size > 4 * 1024 * 1024) { setOcrError('图片过大（≤4MB）'); setOcrState('error'); return }
+    // ── 关键补丁：保存 File 对象引用，后续上传凭证时使用 ──────
+    setImageFile(file)
     const reader = new FileReader()
     reader.onloadend = () => {
       const dataUrl = reader.result as string
@@ -781,9 +790,10 @@ function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
       const results = await analyzeReceipt(base64Data, mimeType)
 
       if (results.length === 1) {
-        // ── 单条：直接填入手写表单（原有行为不变）──────────
+        // ── 单条：填入手写表单，同时传递 imageFile 给父组件 ──
+        // 父组件在 handleSave 成功后会用 imageFile 调用 uploadEvidence
         const r = results[0]
-        onFillForm(r.amount, r.category, r.date, r.notes)
+        onFillForm(r.amount, r.category, r.date, r.notes, imageFile)
         setOcrState('done')
         showToast?.('✨ AI 识别成功，已自动填写表单！', 'success')
       } else {
@@ -816,17 +826,35 @@ function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
     )
   }
 
-  // ── 批量入账（writeBatch 写 Firestore）─────────────────────
+  // ── 批量入账（writeBatch 写 Firestore + 凭证绑定）──────────
+  //
+  // 修复前的问题：
+  //   · writeBatch 写 Transaction 时完全丢弃了 imageFile（base64 只给 Gemini）
+  //   · 无任何 evidences 文档写入，无 receiptUrls 更新
+  //
+  // 修复后的两阶段流程：
+  //   阶段 1 — 预生成 docRef.id，writeBatch 批量写 Transaction（含空 receiptUrls 占位）
+  //   阶段 2 — 对每个新 txId 调用 uploadEvidence(imageFile, txId, ...)
+  //             ↳ uploadEvidence 内部：Storage 上传 + addDoc(evidences) + updateDoc(receiptUrls)
+  //
+  // 为什么对每条 Transaction 各上传一次同一张图？
+  //   · evidences 集合的 transactionId 是 1:1 绑定（一张凭证 → 一张账单）
+  //   · 一张收据包含多条商品行时，每条账单都需要独立的 evidence 文档
+  //   · Storage 费用可忽略，但数据结构的干净性比节省几 KB 更重要
   async function handleBatchOcrSave() {
     const toSave = ocrBatch.filter((_, i) => selectedIdxs.has(i))
     if (toSave.length === 0) { showToast?.('请至少勾选一条记录', 'warning'); return }
     setIsBatchSaving(true)
     try {
-      const batch  = writeBatch(db)
-      const txCol  = collection(db, 'transactions')
-      const now    = serverTimestamp() as unknown as number
+      // ── 阶段 1：预生成 docRef，批量写入 Transaction ──────────
+      const batch     = writeBatch(db)
+      const txCol     = collection(db, 'transactions')
+      const now       = serverTimestamp() as unknown as number
+      const newTxIds: string[] = []
+
       for (const item of toSave) {
         const newRef = doc(txCol)
+        newTxIds.push(newRef.id)
         batch.set(newRef, {
           ledgerId:         activeLedgerId,
           userId:           currentUserId,
@@ -836,18 +864,40 @@ function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
           description:      item.notes || item.category,
           remark:           '',
           source:           'manual',
-          sourceType:       'manual',
+          sourceType:       'ocr',      // ← 正确来源标记
           status:           'cleared',
           tags:             [],
           accountId:        'acc-manual',
           rawData:          {},
           isManuallyEdited: false,
+          isVerified:       false,
+          receiptUrls:      [],         // 占位：uploadEvidence 会 arrayUnion 进来
           createdAt:        now,
           updatedAt:        now,
         })
       }
+
       await batch.commit()
-      showToast?.(`✅ 已批量入账 ${toSave.length} 条记录`, 'success')
+      console.info('[OmniInputModal] OCR 批量账单写入成功，txIds:', newTxIds)
+
+      // ── 阶段 2：为每条账单上传原始小票凭证 ──────────────────
+      // 仅当用户通过拍照/选图选择了本地文件时执行（imageFile 不为 null）
+      if (imageFile) {
+        console.info('[OmniInputModal] 开始上传 OCR 凭证，共', newTxIds.length, '条账单')
+        for (const txId of newTxIds) {
+          try {
+            await uploadEvidence(imageFile, txId, activeLedgerId, currentUserId)
+            console.info('[OmniInputModal] 凭证已关联 txId:', txId)
+          } catch (evErr) {
+            // 凭证上传失败不阻断整体入账流程，可事后通过"补传凭证"补救
+            console.error('[OmniInputModal] 凭证上传失败 txId:', txId, evErr)
+          }
+        }
+        showToast?.(`✅ 已批量入账 ${toSave.length} 条，小票已关联`, 'success')
+      } else {
+        showToast?.(`✅ 已批量入账 ${toSave.length} 条记录`, 'success')
+      }
+
       setOcrState('done')
     } catch (err) {
       const msg = err instanceof Error ? err.message : '写入失败'
@@ -862,6 +912,7 @@ function OcrPanel({ onFillForm, activeLedgerId, showToast }: OcrPanelProps) {
     setOcrState('idle')
     setPreviewUrl(null)
     setBase64Data('')
+    setImageFile(null)   // ← 同步清除 File 引用，防止重拍后仍持有旧图片
     setOcrError('')
     setOcrBatch([])
     setSelectedIdxs(new Set())
@@ -1156,6 +1207,10 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
   const [pendingPoolEvidence,setPendingPoolEvidence] = useState<Evidence | null>(null)  // 已选但待确认
   const [isLinking,          setIsLinking]          = useState(false)  // 关联请求中
 
+  // ── OCR 单条路径：暂存从拍照 Tab 传来的原始图片 File ─────
+  // 用于在手写 Tab 保存后（addTransaction 返回 txId），上传凭证并关联
+  const [ocrImageFile, setOcrImageFile] = useState<File | null>(null)
+
   // ── 本地凭证 URL 列表（路径 A 同步修复）─────────────────────
   // editTx.receiptUrls 是来自 Firestore 的 prop，关联操作后不会自动更新。
   // 维护本地 localReceiptUrls：初始化为 editTx.receiptUrls，关联成功后本地追加。
@@ -1214,6 +1269,7 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
       setShowCatInput(false)
       setCustomCatInput('')
       setLocalReceiptUrls([])  // 重置本地追加列表（新开弹窗时清空）
+      setOcrImageFile(null)    // 重置 OCR 图片引用（防止跨次复用）
       if (editTx) {
         setTxType(editTx.amount > 0 ? 'income' : 'expense')
         setAmountStr(String(Math.abs(editTx.amount)))
@@ -1386,16 +1442,37 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
       return
     }
 
+    // sourceType：若来自 OCR 识别（ocrImageFile 存在），标记为 'ocr'；否则 'manual'
+    const sourceType = ocrImageFile ? 'ocr' : 'manual'
     const data: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> = {
       ledgerId: activeLedgerId, userId: currentUserId, date,
       amount:   txType === 'income' ? amt : -amt,
       category, description: note.trim() || category,
       remark:   remark.trim(),   // 绝不写 undefined，空字符串合法
-      source: 'manual', sourceType: 'manual', status: 'cleared',
+      source: 'manual', sourceType, status: 'cleared',
       tags: [], accountId: 'acc-manual', rawData: {}, isManuallyEdited: false,
+      isVerified: false,
+      receiptUrls: [],           // 占位：uploadEvidence 会 arrayUnion 进来
     }
     try {
-      await addTransaction(data)
+      // addTransaction 返回新生成的 Firestore 文档 ID
+      const newTxId = await addTransaction(data)
+      console.info('[OmniInputModal] 账单已写入 txId:', newTxId)
+
+      // ── 关键补丁：OCR 单条路径 — 保存成功后上传小票凭证 ──
+      // ocrImageFile 由 handleOcrFill 从 OcrPanel 传递而来
+      // 在 addTransaction 成功（txId 已确定）后才执行上传，确保绑定关系准确
+      if (ocrImageFile && newTxId) {
+        try {
+          await uploadEvidence(ocrImageFile, newTxId, activeLedgerId, currentUserId)
+          console.info('[OmniInputModal] OCR 凭证已关联 txId:', newTxId)
+          setOcrImageFile(null)  // 上传成功后清除引用
+        } catch (evErr) {
+          // 凭证上传失败不阻断入账结果，用户可通过"补传凭证"补救
+          console.error('[OmniInputModal] OCR 凭证上传失败（账单已入账）:', evErr)
+        }
+      }
+
       showToast?.('✅ 入账成功！账单正在更新…', 'success')
       setSubmitState('success')
       setTimeout(() => onClose(), 800)
@@ -1409,11 +1486,13 @@ export default function OmniInputModal({ isOpen, onClose, showToast, editTx, onS
 
   // OCR 识别结果回填手写 Tab
   // 在设置 txType 之前先标记 ocrFillingRef，防止 txType effect 覆盖 AI 分类
-  function handleOcrFill(amount: number, cat: SystemCategory, d: string, notes: string) {
+  // imageFile — 同步接收来自 OcrPanel 的原始图片 File，handleSave 保存后上传凭证
+  function handleOcrFill(amount: number, cat: SystemCategory, d: string, notes: string, imageFile: File | null) {
     ocrFillingRef.current = true
     setAmountStr(String(Math.abs(amount)))
     setCategory(cat); setDate(d); setNote(notes)
     setTxType('expense'); setSubmitState('idle'); setErrorMsg('')
+    setOcrImageFile(imageFile)   // ← 暂存图片，handleSave 成功后上传
     setActiveTab('manual')
   }
 
